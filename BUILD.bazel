@@ -1,0 +1,17 @@
+load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+gazelle(name = "gazelle")
+
+go_library(
+    name = "git-ratchet_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/nickvidal/git-ratchet",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "git-ratchet",
+    embed = [":git-ratchet_lib"],
+    visibility = ["//visibility:public"],
+)
