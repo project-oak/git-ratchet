@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "witness",
+    srcs = ["client.go"],
+    importpath = "github.com/nickvidal/git-ratchet/internal/witness",
+    visibility = ["//:__subpackages__"],
+)

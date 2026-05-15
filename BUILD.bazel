@@ -8,6 +8,12 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/nickvidal/git-ratchet",
     visibility = ["//visibility:private"],
+    deps = [
+        "//internal/gitutil",
+        "//internal/note",
+        "//internal/policy",
+        "//internal/witness",
+    ],
 )
 
 go_binary(

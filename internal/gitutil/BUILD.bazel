@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "gitutil",
+    srcs = ["repo.go"],
+    importpath = "github.com/nickvidal/git-ratchet/internal/gitutil",
+    visibility = ["//:__subpackages__"],
+)
