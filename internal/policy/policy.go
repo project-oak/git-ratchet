@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickvidal/git-ratchet/internal/note"
+	"github.com/BenBirt/git-ratchet/internal/note"
 )
 
 // Policy describes the trusted origin and witnesses for a checkpoint.

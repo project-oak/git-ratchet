@@ -1,6 +1,6 @@
-// Package e2e contains integration tests that exercise the git-ratchet CLI
-// binary end-to-end, using a real git repo and a fake witness HTTP server.
-package e2e
+// Package main_test exercises the git-ratchet CLI binary against an in-process
+// fake witness server, verifying the basic checkpoint workflow.
+package main_test
 
 import (
 	"crypto/sha1"
@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nickvidal/git-ratchet/internal/note"
+	"github.com/BenBirt/git-ratchet/internal/note"
 )
 
 // TestCheckpointBasic creates a git repo, runs git-ratchet checkpoint with
@@ -24,23 +24,18 @@ import (
 func TestCheckpointBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	// Generate test keys.
 	originKey := mustGenerateKey(t, "test-origin")
 	witnessKey := mustGenerateKey(t, "test-witness")
 
-	// Start a fake witness.
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
-	// Create a git repo with one commit.
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "initial commit")
 
-	// Write the key and policy files.
 	keyPath := writeKeyFile(t, repoDir, originKey)
 	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
 
-	// Run: git-ratchet checkpoint
 	out, err := exec.Command(binary,
 		"checkpoint",
 		"--branch", "main",
@@ -55,7 +50,6 @@ func TestCheckpointBasic(t *testing.T) {
 	}
 	t.Logf("checkpoint output: %s", out)
 
-	// Verify the checkpoint ref exists.
 	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
 	if err != nil {
 		t.Fatalf("checkpoint ref not found: %v", err)
@@ -63,24 +57,20 @@ func TestCheckpointBasic(t *testing.T) {
 	checkpoint := string(refOut)
 	t.Logf("checkpoint content:\n%s", checkpoint)
 
-	// Parse and verify the checkpoint.
 	body, sigLines, err := note.ParseSignedNote(checkpoint)
 	if err != nil {
 		t.Fatalf("parsing checkpoint: %v", err)
 	}
 
-	// Check the body contains the expected origin and commit.
 	expectedBody := "test.example.com/repo refs/heads/main\n" + commitHash + "\n"
 	if body != expectedBody {
 		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", body, expectedBody)
 	}
 
-	// Should have 2 signature lines: origin + witness.
 	if len(sigLines) != 2 {
 		t.Fatalf("expected 2 signature lines, got %d: %v", len(sigLines), sigLines)
 	}
 
-	// Verify the origin signature.
 	originName, originPub, err := note.ParseVKey(originKey.VKey())
 	if err != nil {
 		t.Fatalf("parsing origin vkey: %v", err)
@@ -96,7 +86,6 @@ func TestCheckpointBasic(t *testing.T) {
 		t.Errorf("origin signature invalid: %v", err)
 	}
 
-	// Verify the witness cosignature.
 	_, witnessPub, err := note.ParseVKey(witnessKey.VKey())
 	if err != nil {
 		t.Fatalf("parsing witness vkey: %v", err)
@@ -106,8 +95,8 @@ func TestCheckpointBasic(t *testing.T) {
 	}
 }
 
-// TestCheckpointMultipleCommits verifies that checkpointing works after
-// multiple commits, and that the checkpoint updates correctly.
+// TestCheckpointMultipleCommits verifies that sequential checkpoints work
+// correctly, with the second requiring an ancestry proof.
 func TestCheckpointMultipleCommits(t *testing.T) {
 	binary := mustFindBinary(t)
 
@@ -122,7 +111,6 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 	keyPath := writeKeyFile(t, repoDir, originKey)
 	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
 
-	// 1. Checkpoint the first commit.
 	out, err := exec.Command(binary,
 		"checkpoint",
 		"--branch", "main",
@@ -135,12 +123,8 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		t.Fatalf("first checkpoint failed: %v\n%s", err, out)
 	}
 
-	// 2. Make a second commit.
 	secondHash := makeCommit(t, repoDir, "second commit")
 
-	// 3. Checkpoint the second commit.
-	// This should generate an ancestry proof spanning from firstHash to secondHash,
-	// which the fake witness will verify and use to update its state.
 	out, err = exec.Command(binary,
 		"checkpoint",
 		"--branch", "main",
@@ -153,7 +137,6 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		t.Fatalf("second checkpoint failed: %v\n%s", err, out)
 	}
 
-	// Read and verify.
 	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
 	if err != nil {
 		t.Fatalf("checkpoint ref not found: %v", err)
@@ -163,7 +146,6 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		t.Fatalf("parsing checkpoint: %v", err)
 	}
 
-	// Body should reference the second commit.
 	if !strings.Contains(body, secondHash) {
 		t.Errorf("checkpoint body should contain commit %s, got:\n%s", secondHash, body)
 	}
@@ -177,7 +159,6 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 	originKey := mustGenerateKey(t, "test-origin")
 	witnessKey := mustGenerateKey(t, "test-witness")
 
-	// Start a witness that always returns 500.
 	ws := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}))
@@ -189,7 +170,6 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 	keyPath := writeKeyFile(t, repoDir, originKey)
 	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
 
-	// Checkpoint should fail because quorum is not met.
 	out, err := exec.Command(binary,
 		"checkpoint",
 		"--branch", "main",
@@ -206,14 +186,13 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 	}
 }
 
-// --- Test helpers ---
+// --- Helpers ---
 
 func mustFindBinary(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("GIT_RATCHET_BIN"); p != "" {
 		return p
 	}
-	// Bazel runfiles: TEST_SRCDIR/<workspace>/git-ratchet_/git-ratchet
 	if srcDir := os.Getenv("TEST_SRCDIR"); srcDir != "" {
 		for _, ws := range []string{"_main", "__main__"} {
 			p := filepath.Join(srcDir, ws, "git-ratchet_", "git-ratchet")
@@ -222,7 +201,7 @@ func mustFindBinary(t *testing.T) string {
 			}
 		}
 	}
-	t.Fatal("git-ratchet binary not found; run with: bazel test //e2e:checkpoint_test")
+	t.Fatal("git-ratchet binary not found; run with: bazel test //:checkpoint_test")
 	return ""
 }
 
@@ -303,7 +282,7 @@ func runOutput(t *testing.T, dir string, name string, args ...string) string {
 type fakeWitness struct {
 	*httptest.Server
 	mu      sync.Mutex
-	commits map[string]string // branchKey -> commit hash
+	commits map[string]string
 }
 
 func parseParent(commitContent string) string {
@@ -348,9 +327,7 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		t.Fatalf("parsing origin vkey: %v", err)
 	}
 
-	fw := &fakeWitness{
-		commits: make(map[string]string),
-	}
+	fw := &fakeWitness{commits: make(map[string]string)}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/add-checkpoint" {
@@ -369,10 +346,8 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		}
 		bodyStr := string(bodyBytes)
 
-		// Split the body into ancestry proof and signed note.
 		lines := strings.Split(bodyStr, "\n")
 		var ancestry []string
-		var signedNote string
 		emptyLineIdx := -1
 		for i, line := range lines {
 			if line == "" {
@@ -385,9 +360,8 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			http.Error(w, "malformed request: missing empty line separator", http.StatusBadRequest)
 			return
 		}
-		signedNote = strings.Join(lines[emptyLineIdx+1:], "\n")
+		signedNote := strings.Join(lines[emptyLineIdx+1:], "\n")
 
-		// Extract body and verify origin signature.
 		noteBody, sigLines, err := note.ParseSignedNote(signedNote)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("parse error: %v", err), http.StatusBadRequest)
@@ -402,7 +376,6 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			return
 		}
 
-		// Parse body: "<origin> <ref>\n<commit-hash>\n"
 		bodyLines := strings.Split(strings.TrimSpace(noteBody), "\n")
 		if len(bodyLines) < 2 {
 			http.Error(w, "malformed checkpoint body", http.StatusBadRequest)
@@ -421,7 +394,6 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		fw.mu.Unlock()
 
 		if storedCommit != "" && newCommit != storedCommit {
-			// Verify ancestry proof.
 			commitMap := make(map[string]string)
 			for _, b64Obj := range ancestry {
 				decoded, err := base64.StdEncoding.DecodeString(b64Obj)
@@ -455,12 +427,10 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			}
 		}
 
-		// Update stored commit hash.
 		fw.mu.Lock()
 		fw.commits[branchKey] = newCommit
 		fw.mu.Unlock()
 
-		// Create cosignature.
 		cosigLine, err := note.Cosign(signedNote, witnessKey)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("cosign error: %v", err), http.StatusInternalServerError)

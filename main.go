@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nickvidal/git-ratchet/internal/gitutil"
-	"github.com/nickvidal/git-ratchet/internal/note"
-	"github.com/nickvidal/git-ratchet/internal/policy"
-	"github.com/nickvidal/git-ratchet/internal/witness"
+	"github.com/BenBirt/git-ratchet/internal/gitutil"
+	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/BenBirt/git-ratchet/internal/policy"
+	"github.com/BenBirt/git-ratchet/internal/witness"
 )
 
 const usageText = `git-ratchet: rollback-resistant Git branch checkpointing

@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "e2e_test",
-    srcs = ["checkpoint_test.go"],
-    data = ["//:git-ratchet"],
+    srcs = ["integration_test.go"],
+    data = [
+        "//:git-ratchet",
+        "//witness:witness",
+    ],
     deps = ["//internal/note"],
 )

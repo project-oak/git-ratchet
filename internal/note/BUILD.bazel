@@ -3,6 +3,6 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "note",
     srcs = ["note.go"],
-    importpath = "github.com/nickvidal/git-ratchet/internal/note",
+    importpath = "github.com/BenBirt/git-ratchet/internal/note",
     visibility = ["//:__subpackages__"],
 )
