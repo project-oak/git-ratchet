@@ -118,10 +118,26 @@ Flags:
 		fatalf("signing checkpoint: %v", err)
 	}
 
+	// Retrieve previous checkpoint and build ancestry proof.
+	var ancestry []string
+	if oldCheckpoint, err := gitutil.ReadCheckpoint(*repoDir, *branch); err == nil {
+		oldBody, err := note.ExtractBody(oldCheckpoint)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(oldBody), "\n")
+			if len(lines) >= 2 {
+				oldCommit := strings.TrimSpace(lines[1])
+				ancestry, err = gitutil.GetCommitChain(*repoDir, oldCommit, *commit)
+				if err != nil {
+					fatalf("failed to generate ancestry proof: %v", err)
+				}
+			}
+		}
+	}
+
 	// Collect cosignatures from witnesses.
 	cosigned := 0
 	for _, w := range pol.Witnesses {
-		cosigLine, err := witness.Cosign(w.Endpoint, signed)
+		cosigLine, err := witness.Cosign(w.Endpoint, ancestry, signed)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: witness %s failed: %v\n", w.Name, err)
 			continue

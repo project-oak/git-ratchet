@@ -3,6 +3,7 @@
 package gitutil
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -57,4 +58,36 @@ func git(repoDir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 	}
 	return string(out), nil
+}
+
+// GetCommitChain returns a slice of base64-encoded raw Git commit objects
+// representing the path from oldCommit to newCommit (excluding oldCommit,
+// and including newCommit).
+func GetCommitChain(repoDir, oldCommit, newCommit string) ([]string, error) {
+	if oldCommit == newCommit {
+		return nil, nil
+	}
+
+	out, err := git(repoDir, "rev-list", "--reverse", oldCommit+".."+newCommit)
+	if err != nil {
+		return nil, fmt.Errorf("getting rev-list from %s to %s: %w", oldCommit, newCommit, err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var commits []string
+	for _, commitHash := range lines {
+		commitHash = strings.TrimSpace(commitHash)
+		if commitHash == "" {
+			continue
+		}
+		// Get raw commit content.
+		content, err := git(repoDir, "cat-file", "-p", commitHash)
+		if err != nil {
+			return nil, fmt.Errorf("reading commit %s: %w", commitHash, err)
+		}
+		// Format: "commit <size>\n<content>"
+		formatted := fmt.Sprintf("commit %d\n%s", len(content), content)
+		commits = append(commits, base64.StdEncoding.EncodeToString([]byte(formatted)))
+	}
+	return commits, nil
 }

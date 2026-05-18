@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"crypto/sha1"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nickvidal/git-ratchet/internal/note"
@@ -116,12 +118,11 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 
 	repoDir := initTestRepo(t)
 	_ = makeCommit(t, repoDir, "first commit")
-	secondHash := makeCommit(t, repoDir, "second commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
 	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
 
-	// Checkpoint the branch HEAD (should be second commit).
+	// 1. Checkpoint the first commit.
 	out, err := exec.Command(binary,
 		"checkpoint",
 		"--branch", "main",
@@ -131,7 +132,25 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		"--origin", "test.example.com/repo",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+		t.Fatalf("first checkpoint failed: %v\n%s", err, out)
+	}
+
+	// 2. Make a second commit.
+	secondHash := makeCommit(t, repoDir, "second commit")
+
+	// 3. Checkpoint the second commit.
+	// This should generate an ancestry proof spanning from firstHash to secondHash,
+	// which the fake witness will verify and use to update its state.
+	out, err = exec.Command(binary,
+		"checkpoint",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+		"--origin", "test.example.com/repo",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("second checkpoint failed: %v\n%s", err, out)
 	}
 
 	// Read and verify.
@@ -283,6 +302,43 @@ func runOutput(t *testing.T, dir string, name string, args ...string) string {
 
 type fakeWitness struct {
 	*httptest.Server
+	mu      sync.Mutex
+	commits map[string]string // branchKey -> commit hash
+}
+
+func parseParent(commitContent string) string {
+	for _, line := range strings.Split(commitContent, "\n") {
+		if strings.HasPrefix(line, "parent ") {
+			return strings.TrimPrefix(line, "parent ")
+		}
+	}
+	return ""
+}
+
+func gitCommitHash(decoded []byte) (string, error) {
+	s := string(decoded)
+	if !strings.HasPrefix(s, "commit ") {
+		return "", fmt.Errorf("invalid commit prefix")
+	}
+	idx := strings.IndexByte(s, '\n')
+	if idx < 0 {
+		return "", fmt.Errorf("invalid format: missing newline")
+	}
+	header := s[:idx]
+	content := s[idx+1:]
+
+	var size int
+	if _, err := fmt.Sscanf(header, "commit %d", &size); err != nil {
+		return "", fmt.Errorf("parsing size: %w", err)
+	}
+	if size != len(content) {
+		return "", fmt.Errorf("size mismatch: header %d, actual %d", size, len(content))
+	}
+
+	h := sha1.New()
+	h.Write([]byte(fmt.Sprintf("commit %d\x00", size)))
+	h.Write([]byte(content))
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signer) *fakeWitness {
@@ -292,8 +348,12 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		t.Fatalf("parsing origin vkey: %v", err)
 	}
 
+	fw := &fakeWitness{
+		commits: make(map[string]string),
+	}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/cosign" {
+		if r.URL.Path != "/add-checkpoint" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -307,7 +367,25 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			http.Error(w, "read error", http.StatusBadRequest)
 			return
 		}
-		signedNote := string(bodyBytes)
+		bodyStr := string(bodyBytes)
+
+		// Split the body into ancestry proof and signed note.
+		lines := strings.Split(bodyStr, "\n")
+		var ancestry []string
+		var signedNote string
+		emptyLineIdx := -1
+		for i, line := range lines {
+			if line == "" {
+				emptyLineIdx = i
+				break
+			}
+			ancestry = append(ancestry, line)
+		}
+		if emptyLineIdx < 0 {
+			http.Error(w, "malformed request: missing empty line separator", http.StatusBadRequest)
+			return
+		}
+		signedNote = strings.Join(lines[emptyLineIdx+1:], "\n")
 
 		// Extract body and verify origin signature.
 		noteBody, sigLines, err := note.ParseSignedNote(signedNote)
@@ -324,6 +402,64 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			return
 		}
 
+		// Parse body: "<origin> <ref>\n<commit-hash>\n"
+		bodyLines := strings.Split(strings.TrimSpace(noteBody), "\n")
+		if len(bodyLines) < 2 {
+			http.Error(w, "malformed checkpoint body", http.StatusBadRequest)
+			return
+		}
+		branchParts := strings.Fields(bodyLines[0])
+		if len(branchParts) != 2 {
+			http.Error(w, "malformed branch line", http.StatusBadRequest)
+			return
+		}
+		branchKey := branchParts[0] + " " + branchParts[1]
+		newCommit := strings.TrimSpace(bodyLines[1])
+
+		fw.mu.Lock()
+		storedCommit := fw.commits[branchKey]
+		fw.mu.Unlock()
+
+		if storedCommit != "" && newCommit != storedCommit {
+			// Verify ancestry proof.
+			commitMap := make(map[string]string)
+			for _, b64Obj := range ancestry {
+				decoded, err := base64.StdEncoding.DecodeString(b64Obj)
+				if err != nil {
+					http.Error(w, "malformed base64 in ancestry", http.StatusUnprocessableEntity)
+					return
+				}
+				commitID, err := gitCommitHash(decoded)
+				if err != nil {
+					http.Error(w, "invalid commit object in ancestry", http.StatusUnprocessableEntity)
+					return
+				}
+				s := string(decoded)
+				idx := strings.IndexByte(s, '\n')
+				commitMap[commitID] = s[idx+1:]
+			}
+
+			curr := newCommit
+			for curr != storedCommit {
+				content, ok := commitMap[curr]
+				if !ok {
+					http.Error(w, "incomplete ancestry proof", http.StatusUnprocessableEntity)
+					return
+				}
+				parent := parseParent(content)
+				if parent == "" {
+					http.Error(w, "broken ancestry proof chain", http.StatusUnprocessableEntity)
+					return
+				}
+				curr = parent
+			}
+		}
+
+		// Update stored commit hash.
+		fw.mu.Lock()
+		fw.commits[branchKey] = newCommit
+		fw.mu.Unlock()
+
 		// Create cosignature.
 		cosigLine, err := note.Cosign(signedNote, witnessKey)
 		if err != nil {
@@ -335,5 +471,6 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		fmt.Fprint(w, cosigLine)
 	}))
 
-	return &fakeWitness{Server: srv}
+	fw.Server = srv
+	return fw
 }
