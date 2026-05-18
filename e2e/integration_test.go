@@ -54,13 +54,23 @@ func TestIntegration(t *testing.T) {
 	if !strings.Contains(refBody, commitHash1) {
 		t.Errorf("checkpoint 1: expected ref to contain %s", commitHash1)
 	}
+	if err := runVerify(t, gitRatchetBin, repoDir, policyPath); err != nil {
+		t.Errorf("verify after checkpoint 1: %v", err)
+	}
 
 	// 2. Second commit — requires ancestry proof.
 	commitHash2 := makeCommit(t, repoDir, "second commit")
+	// HEAD is now ahead of checkpoint — verify should fail.
+	if err := runVerify(t, gitRatchetBin, repoDir, policyPath); err == nil {
+		t.Error("verify should fail when HEAD is ahead of checkpoint")
+	}
 	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath, commitHash2)
 	refBody = readCheckpointRef(t, repoDir)
 	if !strings.Contains(refBody, commitHash2) {
 		t.Errorf("checkpoint 2: expected ref to contain %s", commitHash2)
+	}
+	if err := runVerify(t, gitRatchetBin, repoDir, policyPath); err != nil {
+		t.Errorf("verify after checkpoint 2: %v", err)
 	}
 
 	// 3. Restart server to verify state persistence.
@@ -73,6 +83,48 @@ func TestIntegration(t *testing.T) {
 	policyPath3 := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL3)
 	commitHash3 := makeCommit(t, repoDir, "third commit")
 	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath3, commitHash3)
+	if err := runVerify(t, gitRatchetBin, repoDir, policyPath3); err != nil {
+		t.Errorf("verify after checkpoint 3: %v", err)
+	}
+
+	// 4. Tamper with the checkpoint blob — verify should reject it.
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	if err != nil {
+		t.Fatalf("reading checkpoint ref: %v", err)
+	}
+	tampered := []byte(string(refOut))
+	for i := len(tampered) - 5; i < len(tampered)-1; i++ {
+		tampered[i] ^= 0xFF
+	}
+	hashCmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
+	hashCmd.Stdin = strings.NewReader(string(tampered))
+	blobOut, err := hashCmd.Output()
+	if err != nil {
+		t.Fatalf("writing tampered blob: %v", err)
+	}
+	blobHash := strings.TrimSpace(string(blobOut))
+	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
+		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		t.Fatalf("updating ref to tampered blob: %v\n%s", err, out)
+	}
+	if err := runVerify(t, gitRatchetBin, repoDir, policyPath3); err == nil {
+		t.Error("verify should fail after tampering with the checkpoint blob")
+	}
+}
+
+// runVerify invokes git-ratchet verify and returns any error (nil = exit 0).
+func runVerify(t *testing.T, binary, repoDir, policyPath string) error {
+	t.Helper()
+	out, err := exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("verify output: %s", out)
+	}
+	return err
 }
 
 // runCheckpoint invokes git-ratchet checkpoint and fatals on failure.
@@ -84,7 +136,6 @@ func runCheckpoint(t *testing.T, binary, repoDir, keyPath, policyPath, commit st
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
-		"--origin", "test.example.com/repo",
 	}
 	if commit != "" {
 		args = append(args, "--commit", commit)
@@ -191,11 +242,12 @@ func mustWriteKey(t *testing.T, path string, s *note.Signer) {
 	}
 }
 
-func writePolicyFile(t *testing.T, dir string, origin, witness *note.Signer, witnessURL string) string {
+func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string) string {
 	t.Helper()
 	p := filepath.Join(dir, "policy.txt")
-	content := fmt.Sprintf("origin %s\nwitness %s %s\nquorum 1\n",
-		origin.VKey(), witnessURL, witness.VKey())
+	// tlog-policy format: log, named witness (w1), quorum referencing the witness by name.
+	content := fmt.Sprintf("log %s\nwitness w1 %s %s\nquorum w1\n",
+		log.VKey(), witnessURL, witness.VKey())
 	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

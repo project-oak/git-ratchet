@@ -52,7 +52,7 @@ func newSigner(name string, priv ed25519.PrivateKey) *Signer {
 	pub := priv.Public().(ed25519.PublicKey)
 	return &Signer{
 		Name: name,
-		hash: keyHash(name, pub),
+		hash: KeyHash(name, pub),
 		priv: priv,
 		pub:  pub,
 	}
@@ -139,7 +139,7 @@ func ParseSignedNote(data string) (body string, sigLines []string, err error) {
 
 // VerifySignature verifies an origin signature line against a public key.
 func VerifySignature(body, sigLine string, pub ed25519.PublicKey) error {
-	raw, err := decodeSigLine(sigLine)
+	raw, err := DecodeSigLine(sigLine)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func VerifySignature(body, sigLine string, pub ed25519.PublicKey) error {
 
 // VerifyCosignature verifies a witness cosignature line against a public key.
 func VerifyCosignature(body, sigLine string, pub ed25519.PublicKey) error {
-	raw, err := decodeSigLine(sigLine)
+	raw, err := DecodeSigLine(sigLine)
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func VerifyCosignature(body, sigLine string, pub ed25519.PublicKey) error {
 		return fmt.Errorf("cosignature too short")
 	}
 	// Cosignature is over the body, same as origin signature.
-	// The raw bytes are: keyHash(4) || timestamp(8) || signature.
+	// The raw bytes are: KeyHash(4) || timestamp(8) || signature.
 	if !ed25519.Verify(pub, []byte(body), raw[4+8:]) {
 		return fmt.Errorf("cosignature verification failed")
 	}
@@ -181,7 +181,11 @@ func SigName(sigLine string) (string, error) {
 	return "", fmt.Errorf("invalid signature line format")
 }
 
-func decodeSigLine(line string) ([]byte, error) {
+// DecodeSigLine decodes a signature line and returns the raw bytes
+// (KeyHash[4] || … || signature). The first 4 bytes are the key hash as
+// embedded by the signer; callers can compare them against an expected hash
+// for defence-in-depth key-confusion protection.
+func DecodeSigLine(line string) ([]byte, error) {
 	if !strings.HasPrefix(line, SigPrefix) {
 		return nil, fmt.Errorf("not a signature line")
 	}
@@ -197,7 +201,7 @@ func decodeSigLine(line string) ([]byte, error) {
 
 // FormatVKey formats a verifier key: name+hexID+base64(0x01||pubkey).
 func FormatVKey(name string, pub ed25519.PublicKey) string {
-	kh := keyHash(name, pub)
+	kh := KeyHash(name, pub)
 	data := append([]byte{0x01}, pub...)
 	return fmt.Sprintf("%s+%08x+%s", name,
 		binary.BigEndian.Uint32(kh[:]),
@@ -224,7 +228,10 @@ func ParseVKey(vkey string) (string, ed25519.PublicKey, error) {
 	return parts[0], pub, nil
 }
 
-func keyHash(name string, pub ed25519.PublicKey) [4]byte {
+// KeyHash returns the 4-byte key hash for a name+public-key pair.
+// This is the value embedded in the leading bytes of every signature line
+// produced by a signer with those credentials.
+func KeyHash(name string, pub ed25519.PublicKey) [4]byte {
 	h := sha256.New()
 	h.Write([]byte(name + "\n"))
 	h.Write([]byte{0x01}) // Ed25519

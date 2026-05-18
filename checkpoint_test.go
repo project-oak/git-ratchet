@@ -43,7 +43,6 @@ func TestCheckpointBasic(t *testing.T) {
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
-		"--origin", "test.example.com/repo",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git-ratchet checkpoint failed: %v\n%s", err, out)
@@ -62,7 +61,7 @@ func TestCheckpointBasic(t *testing.T) {
 		t.Fatalf("parsing checkpoint: %v", err)
 	}
 
-	expectedBody := "test.example.com/repo refs/heads/main\n" + commitHash + "\n"
+	expectedBody := originKey.Name + " refs/heads/main\n" + commitHash + "\n"
 	if body != expectedBody {
 		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", body, expectedBody)
 	}
@@ -117,7 +116,6 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
-		"--origin", "test.example.com/repo",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("first checkpoint failed: %v\n%s", err, out)
@@ -131,7 +129,6 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
-		"--origin", "test.example.com/repo",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("second checkpoint failed: %v\n%s", err, out)
@@ -176,7 +173,6 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
-		"--origin", "test.example.com/repo",
 	).CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected checkpoint to fail with insufficient witnesses, but it succeeded:\n%s", out)
@@ -186,7 +182,224 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 	}
 }
 
-// --- Helpers ---
+// TestVerifyBasic checkpoints a branch and then verifies it, expecting success.
+func TestVerifyBasic(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--branch", "main",
+		"--commit", commitHash,
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify failed: %v\n%s", err, out)
+	}
+	t.Logf("verify output: %s", out)
+}
+
+// TestVerifyNoCheckpoint verifies that a missing checkpoint ref produces a
+// non-zero exit and includes a git fetch hint in the error output.
+func TestVerifyNoCheckpoint(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+
+	out, err := exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail with no checkpoint, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "git fetch") {
+		t.Errorf("expected git fetch hint in error output, got:\n%s", out)
+	}
+}
+
+// TestVerifyAheadOfCheckpoint makes two commits, checkpoints at the first,
+// then verifies when HEAD is at the second (unwitnessed) commit.
+// verify should fail because HEAD is ahead of the checkpoint.
+func TestVerifyAheadOfCheckpoint(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	commitA := makeCommit(t, repoDir, "first commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	// Checkpoint at commit A.
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--branch", "main",
+		"--commit", commitA,
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	// Advance HEAD to commit B (unwitnessed).
+	_ = makeCommit(t, repoDir, "second commit not yet witnessed")
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail when HEAD is ahead of checkpoint, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "ahead of") {
+		t.Errorf("expected 'ahead of' in error output, got:\n%s", out)
+	}
+}
+
+// TestVerifyTamperedNote checkpoints a branch then overwrites the checkpoint
+// blob with a note whose bytes have been corrupted. verify should fail.
+func TestVerifyTamperedNote(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--branch", "main",
+		"--commit", commitHash,
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	// Read the checkpoint and corrupt bytes near the end of the signature blob.
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	if err != nil {
+		t.Fatalf("reading checkpoint ref: %v", err)
+	}
+	tampered := []byte(string(refOut))
+	for i := len(tampered) - 5; i < len(tampered)-1; i++ {
+		tampered[i] ^= 0xFF
+	}
+	hashCmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
+	hashCmd.Stdin = strings.NewReader(string(tampered))
+	blobOut, err := hashCmd.Output()
+	if err != nil {
+		t.Fatalf("writing tampered blob: %v", err)
+	}
+	blobHash := strings.TrimSpace(string(blobOut))
+	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
+		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		t.Fatalf("updating ref: %v\n%s", err, out)
+	}
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail with tampered note, but it succeeded:\n%s", out)
+	}
+	t.Logf("verify error (expected): %s", out)
+}
+
+// TestVerifyInsufficientCosigs stores a note with only an origin signature
+// (no witness cosigs) and expects verify to fail the quorum check.
+func TestVerifyInsufficientCosigs(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "initial commit")
+
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+
+	// Build a note with only the origin (log) signature — no cosig.
+	body := originKey.Name + " refs/heads/main\n" + commitHash + "\n"
+	signed, err := note.Sign(body, originKey)
+	if err != nil {
+		t.Fatalf("signing: %v", err)
+	}
+	hashCmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
+	hashCmd.Stdin = strings.NewReader(signed)
+	blobOut, err := hashCmd.Output()
+	if err != nil {
+		t.Fatalf("writing blob: %v", err)
+	}
+	blobHash := strings.TrimSpace(string(blobOut))
+	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
+		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		t.Fatalf("updating ref: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binary,
+		"verify",
+		"--branch", "main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail with no cosignatures, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "insufficient cosignatures") {
+		t.Errorf("expected 'insufficient cosignatures' in error output, got:\n%s", out)
+	}
+}
 
 func mustFindBinary(t *testing.T) string {
 	t.Helper()
@@ -245,11 +458,12 @@ func writeKeyFile(t *testing.T, dir string, s *note.Signer) string {
 	return p
 }
 
-func writePolicyFile(t *testing.T, dir string, origin, witness *note.Signer, witnessURL string) string {
+func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string) string {
 	t.Helper()
 	p := filepath.Join(dir, "policy.txt")
-	content := fmt.Sprintf("origin %s\nwitness %s %s\nquorum 1\n",
-		origin.VKey(), witnessURL, witness.VKey())
+	// tlog-policy format: log, named witness (w1), quorum referencing the witness by name.
+	content := fmt.Sprintf("log %s\nwitness w1 %s %s\nquorum w1\n",
+		log.VKey(), witnessURL, witness.VKey())
 	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

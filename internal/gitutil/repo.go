@@ -60,6 +60,27 @@ func git(repoDir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// IsAncestor reports whether ancestor is an ancestor-or-equal of descendant
+// in the repository at repoDir.
+//
+// Returns (true, nil) when ancestor == descendant or when ancestor is reachable
+// by following parent links from descendant. Returns (false, nil) when the
+// commit is not an ancestor. Returns a non-nil error only on git failures
+// (e.g. unknown commit hash, not a git repository).
+func IsAncestor(repoDir, ancestor, descendant string) (bool, error) {
+	cmd := exec.Command("git", "-C", repoDir, "merge-base", "--is-ancestor", ancestor, descendant)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Exit code 1 means "not an ancestor" — that is a valid, non-error result.
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git merge-base --is-ancestor: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return true, nil
+}
+
+
 // GetCommitChain returns a slice of base64-encoded raw Git commit objects
 // representing the path from oldCommit to newCommit (excluding oldCommit,
 // and including newCommit).

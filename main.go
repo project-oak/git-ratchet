@@ -67,7 +67,6 @@ Flags:
 	policyPath := fs.String("policy", "", "Path to witness policy file (required)")
 	keyPath := fs.String("key", "", "Path to origin private key file (required)")
 	repoDir := fs.String("repo", ".", "Path to git repository")
-	origin := fs.String("origin", "", "Origin identifier (default: infer from git remote)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -100,17 +99,8 @@ Flags:
 		}
 	}
 
-	// Determine origin identifier.
-	if *origin == "" {
-		url, err := gitutil.RemoteURL(*repoDir)
-		if err != nil {
-			fatalf("could not infer origin (no git remote); use --origin: %v", err)
-		}
-		*origin = cleanRemoteURL(url)
-	}
-
-	// Build the checkpoint body.
-	body := *origin + " refs/heads/" + *branch + "\n" + *commit + "\n"
+	// Build the checkpoint body using the log name from the policy.
+	body := pol.LogName + " refs/heads/" + *branch + "\n" + *commit + "\n"
 
 	// Sign the checkpoint.
 	signed, err := note.Sign(body, signer)
@@ -134,20 +124,38 @@ Flags:
 		}
 	}
 
-	// Collect cosignatures from witnesses.
+	// Collect cosignatures from witnesses in parallel.
+	type cosigResult struct {
+		policyName string
+		cosigLine  string
+		err        error
+	}
+	witnesses := pol.Witnesses()
+	ch := make(chan cosigResult, len(witnesses))
+	for _, w := range witnesses {
+		go func(w *policy.Witness) {
+			line, err := witness.Cosign(w.Endpoint, ancestry, signed)
+			ch <- cosigResult{w.PolicyName, line, err}
+		}(w)
+	}
 	cosigned := 0
-	for _, w := range pol.Witnesses {
-		cosigLine, err := witness.Cosign(w.Endpoint, ancestry, signed)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: witness %s failed: %v\n", w.Name, err)
+	for range witnesses {
+		r := <-ch
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "warning: witness %s failed: %v\n", r.policyName, r.err)
 			continue
 		}
-		signed = note.AppendSignature(signed, cosigLine)
+		signed = note.AppendSignature(signed, r.cosigLine)
 		cosigned++
 	}
 
-	if cosigned < pol.Quorum {
-		fatalf("insufficient cosignatures: got %d, need %d", cosigned, pol.Quorum)
+	// Verify the assembled checkpoint satisfies the policy quorum.
+	assembledBody, assembledSigLines, err := note.ParseSignedNote(signed)
+	if err != nil {
+		fatalf("parsing assembled checkpoint: %v", err)
+	}
+	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
+		fatalf("checkpoint does not meet policy quorum: %v", err)
 	}
 
 	// Store the checkpoint as a git ref.
@@ -165,7 +173,8 @@ func cmdVerify(args []string) {
 
 Fetches the checkpoint ref for the specified branch, verifies the
 origin signature and witness cosignatures against the policy, and
-confirms the current branch tip matches the checkpointed commit.
+confirms the current branch tip has not moved ahead of the
+checkpointed commit.
 
 Usage:
   git-ratchet verify [flags]
@@ -175,30 +184,86 @@ Flags:
 		fs.PrintDefaults()
 	}
 
-	_ = fs.String("branch", "", "Branch to verify (required)")
-	_ = fs.String("policy", "", "Path to witness policy file (required)")
+	branch := fs.String("branch", "", "Branch to verify (required)")
+	policyPath := fs.String("policy", "", "Path to witness policy file (required)")
+	repoDir := fs.String("repo", ".", "Path to git repository")
+	commit := fs.String("commit", "", "Commit hash to check against checkpoint (default: resolve from branch HEAD)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 
-	fmt.Fprintln(os.Stderr, "error: verify command is not yet implemented")
-	os.Exit(1)
+	if *branch == "" || *policyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --branch and --policy are required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	// Load the policy.
+	pol, err := policy.Load(*policyPath)
+	if err != nil {
+		fatalf("loading policy: %v", err)
+	}
+
+	// Read the stored checkpoint.
+	checkpoint, err := gitutil.ReadCheckpoint(*repoDir, *branch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: no checkpoint found for branch %q\n", *branch)
+		fmt.Fprintf(os.Stderr, "hint: if this repo was cloned, fetch the checkpoint ref with:\n")
+		fmt.Fprintf(os.Stderr, "  git fetch origin refs/checkpoints/%s:refs/checkpoints/%s\n", *branch, *branch)
+		os.Exit(1)
+	}
+
+	// Parse the signed note.
+	body, sigLines, err := note.ParseSignedNote(checkpoint)
+	if err != nil {
+		fatalf("parsing checkpoint: %v", err)
+	}
+
+	// Verify origin signature and witness cosignatures.
+	if err := pol.Verify(body, sigLines); err != nil {
+		fatalf("checkpoint verification failed: %v", err)
+	}
+
+	// Extract the checkpointed commit hash from the note body.
+	bodyLines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(bodyLines) < 2 {
+		fatalf("malformed checkpoint body")
+	}
+	checkpointedCommit := strings.TrimSpace(bodyLines[1])
+
+	// Determine the commit to check: explicit --commit or branch HEAD.
+	var localCommit string
+	if *commit != "" {
+		localCommit = *commit
+	} else {
+		ref := "refs/heads/" + *branch
+		localCommit, err = gitutil.ResolveRef(*repoDir, ref)
+		if err != nil {
+			fatalf("resolving branch HEAD: %v", err)
+		}
+	}
+
+	// localCommit must be an ancestor-or-equal of the checkpointed commit.
+	// If it is ahead of the checkpoint, those commits are unwitnessed and
+	// could be silently removed — exactly the attack the ratchet guards against.
+	ok, err := gitutil.IsAncestor(*repoDir, localCommit, checkpointedCommit)
+	if err != nil {
+		fatalf("checking ancestry: %v", err)
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "error: local commit is ahead of the last witnessed checkpoint\n")
+		fmt.Fprintf(os.Stderr, "  local commit:         %s\n", localCommit)
+		fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
+		fmt.Fprintf(os.Stderr, "Commits after the checkpoint have not been witnessed and could be\n")
+		fmt.Fprintf(os.Stderr, "silently removed. Run \"git-ratchet checkpoint\" to extend the ratchet.\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("verified: %s @ %s (%d cosignatures)\n",
+		strings.TrimSpace(bodyLines[0]), checkpointedCommit[:12], len(sigLines)-1)
 }
 
-// cleanRemoteURL normalises a git remote URL into a clean origin string.
-// e.g. "https://github.com/example/repo.git" → "github.com/example/repo"
-func cleanRemoteURL(u string) string {
-	u = strings.TrimSuffix(u, ".git")
-	u = strings.TrimPrefix(u, "https://")
-	u = strings.TrimPrefix(u, "http://")
-	// Handle SSH URLs: git@github.com:example/repo → github.com/example/repo
-	if strings.Contains(u, "@") {
-		u = u[strings.Index(u, "@")+1:]
-		u = strings.Replace(u, ":", "/", 1)
-	}
-	return u
-}
 
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
