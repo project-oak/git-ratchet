@@ -14,8 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/BenBirt/git-ratchet/internal/gitutil"
 	"github.com/BenBirt/git-ratchet/internal/note"
 )
 
@@ -436,9 +438,12 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
+var testFileCounter int64
+
 func makeCommit(t *testing.T, dir, msg string) string {
 	t.Helper()
-	f := filepath.Join(dir, fmt.Sprintf("file-%d.txt", len(msg)))
+	n := atomic.AddInt64(&testFileCounter, 1)
+	f := filepath.Join(dir, fmt.Sprintf("file-%d.txt", n))
 	if err := os.WriteFile(f, []byte(msg+"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -509,29 +514,7 @@ func parseParent(commitContent string) string {
 }
 
 func gitCommitHash(decoded []byte) (string, error) {
-	s := string(decoded)
-	if !strings.HasPrefix(s, "commit ") {
-		return "", fmt.Errorf("invalid commit prefix")
-	}
-	idx := strings.IndexByte(s, '\n')
-	if idx < 0 {
-		return "", fmt.Errorf("invalid format: missing newline")
-	}
-	header := s[:idx]
-	content := s[idx+1:]
-
-	var size int
-	if _, err := fmt.Sscanf(header, "commit %d", &size); err != nil {
-		return "", fmt.Errorf("parsing size: %w", err)
-	}
-	if size != len(content) {
-		return "", fmt.Errorf("size mismatch: header %d, actual %d", size, len(content))
-	}
-
-	h := sha1.New()
-	h.Write([]byte(fmt.Sprintf("commit %d\x00", size)))
-	h.Write([]byte(content))
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return gitutil.CommitHash(decoded, sha1.Size*2) // SHA-1: 40 hex chars
 }
 
 func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signer) *fakeWitness {

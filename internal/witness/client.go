@@ -2,6 +2,7 @@
 package witness
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,7 +12,10 @@ import (
 // Cosign sends a signed checkpoint and its ancestry proof to a witness endpoint
 // and returns the cosignature line. The witness verifies the origin signature
 // and ancestry, then returns a cosignature.
-func Cosign(endpoint string, ancestry []string, signedCheckpoint string) (string, error) {
+//
+// The caller should pass a context with an appropriate deadline; Cosign will
+// cancel the HTTP request and return an error if the context expires.
+func Cosign(ctx context.Context, endpoint string, ancestry []string, signedCheckpoint string) (string, error) {
 	url := strings.TrimRight(endpoint, "/") + "/add-checkpoint"
 
 	var parts []string
@@ -22,7 +26,13 @@ func Cosign(endpoint string, ancestry []string, signedCheckpoint string) (string
 	parts = append(parts, signedCheckpoint)
 	reqBody := strings.Join(parts, "\n")
 
-	resp, err := http.Post(url, "text/plain", strings.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("building request for witness %s: %w", endpoint, err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("contacting witness %s: %w", endpoint, err)
 	}

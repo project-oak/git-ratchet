@@ -2,10 +2,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/BenBirt/git-ratchet/internal/gitutil"
 	"github.com/BenBirt/git-ratchet/internal/note"
@@ -125,6 +127,8 @@ Flags:
 	}
 
 	// Collect cosignatures from witnesses in parallel.
+	// Each witness gets its own 30-second deadline so a hung or slow witness
+	// does not block the command indefinitely.
 	type cosigResult struct {
 		policyName string
 		cosigLine  string
@@ -134,7 +138,9 @@ Flags:
 	ch := make(chan cosigResult, len(witnesses))
 	for _, w := range witnesses {
 		go func(w *policy.Witness) {
-			line, err := witness.Cosign(w.Endpoint, ancestry, signed)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			line, err := witness.Cosign(ctx, w.Endpoint, ancestry, signed)
 			ch <- cosigResult{w.PolicyName, line, err}
 		}(w)
 	}

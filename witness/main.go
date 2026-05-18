@@ -4,13 +4,10 @@ package main
 import (
 	"bufio"
 	"crypto/ed25519"
-	"crypto/sha1"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"hash"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BenBirt/git-ratchet/internal/gitutil"
 	"github.com/BenBirt/git-ratchet/internal/note"
 )
 
@@ -185,7 +183,7 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "malformed base64 encoding in ancestry proof", http.StatusUnprocessableEntity)
 				return
 			}
-			commitID, err := gitCommitHash(decoded, len(newCommit))
+			commitID, err := gitutil.CommitHash(decoded, len(newCommit))
 			if err != nil {
 				http.Error(w, fmt.Sprintf("invalid commit object in ancestry proof: %v", err), http.StatusUnprocessableEntity)
 				return
@@ -263,38 +261,6 @@ func parseParents(content string) []string {
 		}
 	}
 	return parents
-}
-
-func gitCommitHash(decoded []byte, expectedHashLen int) (string, error) {
-	s := string(decoded)
-	if !strings.HasPrefix(s, "commit ") {
-		return "", fmt.Errorf("invalid commit prefix")
-	}
-	idx := strings.IndexByte(s, '\n')
-	if idx < 0 {
-		return "", fmt.Errorf("invalid format: missing newline")
-	}
-	header := s[:idx]
-	content := s[idx+1:]
-
-	var size int
-	if _, err := fmt.Sscanf(header, "commit %d", &size); err != nil {
-		return "", fmt.Errorf("parsing size: %w", err)
-	}
-	if size != len(content) {
-		return "", fmt.Errorf("size mismatch: header %d, actual %d", size, len(content))
-	}
-
-	var h hash.Hash
-	if expectedHashLen == 64 {
-		h = sha256.New()
-	} else {
-		h = sha1.New()
-	}
-
-	h.Write([]byte(fmt.Sprintf("commit %d\x00", size)))
-	h.Write([]byte(content))
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func (s *Server) loadState() error {

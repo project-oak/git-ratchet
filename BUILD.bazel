@@ -26,5 +26,8 @@ go_test(
     name = "checkpoint_test",
     srcs = ["checkpoint_test.go"],
     data = [":git-ratchet"],
-    deps = ["//internal/note"],
+    deps = [
+        "//internal/gitutil",
+        "//internal/note",
+    ],
 )

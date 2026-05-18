@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,9 +213,12 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
+var e2eFileCounter int64
+
 func makeCommit(t *testing.T, dir, msg string) string {
 	t.Helper()
-	f := filepath.Join(dir, fmt.Sprintf("file-%d.txt", len(msg)))
+	n := atomic.AddInt64(&e2eFileCounter, 1)
+	f := filepath.Join(dir, fmt.Sprintf("file-%d.txt", n))
 	if err := os.WriteFile(f, []byte(msg+"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -276,10 +280,32 @@ func startWitnessServer(t *testing.T, binary string, port int, keyPath, originsP
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting witness server: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitForServer(t, fmt.Sprintf("127.0.0.1:%d", port))
 	return func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+	}
+}
+
+// waitForServer polls addr ("host:port") until a TCP connection succeeds or the
+// deadline (5 s) is exceeded, using exponential backoff starting at 5 ms.
+func waitForServer(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	delay := 5 * time.Millisecond
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("witness server at %s did not start within 5s: %v", addr, err)
+		}
+		time.Sleep(delay)
+		if delay < 200*time.Millisecond {
+			delay *= 2
+		}
 	}
 }
 
