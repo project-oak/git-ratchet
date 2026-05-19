@@ -5,6 +5,7 @@ package main_test
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -170,6 +171,33 @@ func TestAddCheckpointFirstSubmission(t *testing.T) {
 	}
 }
 
+// TestAddCheckpointFirstSubmissionSHA256 is the SHA-256 variant of
+// TestAddCheckpointFirstSubmission.
+func TestAddCheckpointFirstSubmissionSHA256(t *testing.T) {
+	baseURL, originKey, witnessKey, stop := setupServer(t)
+	defer stop()
+
+	commit := strings.Repeat("a", 64) // SHA-256 length
+	signed := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", commit)
+	payload := "\n" + signed
+
+	resp := post(t, baseURL, payload)
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.HasPrefix(body, note.SigPrefix) {
+		t.Errorf("expected cosignature line, got: %q", body)
+	}
+
+	_, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
+	noteBody := "example.com/repo refs/heads/main\n" + commit + "\n"
+	if err := note.VerifyCosignature(noteBody, body, witnessPub); err != nil {
+		t.Errorf("cosignature verification failed: %v", err)
+	}
+}
+
 // TestAddCheckpointIdempotent verifies that re-submitting the same commit
 // (already stored) returns 200 without ancestry.
 func TestAddCheckpointIdempotent(t *testing.T) {
@@ -188,6 +216,29 @@ func TestAddCheckpointIdempotent(t *testing.T) {
 	}
 
 	// Identical second submission — should still be 200.
+	resp2 := post(t, baseURL, payload)
+	body2 := readBody(t, resp2)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent submission: expected 200, got %d: %s", resp2.StatusCode, body2)
+	}
+}
+
+// TestAddCheckpointIdempotentSHA256 is the SHA-256 variant of
+// TestAddCheckpointIdempotent.
+func TestAddCheckpointIdempotentSHA256(t *testing.T) {
+	baseURL, originKey, _, stop := setupServer(t)
+	defer stop()
+
+	commit := strings.Repeat("b", 64)
+	signed := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", commit)
+	payload := "\n" + signed
+
+	resp := post(t, baseURL, payload)
+	readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first submission: expected 200, got %d", resp.StatusCode)
+	}
+
 	resp2 := post(t, baseURL, payload)
 	body2 := readBody(t, resp2)
 	if resp2.StatusCode != http.StatusOK {
@@ -287,9 +338,9 @@ func TestAddCheckpointDisconnectedAncestry(t *testing.T) {
 
 	// Build a two-commit orphan chain that doesn't include storedCommit.
 	// orphanA is a root commit (no parent).
-	orphanA, orphanAObj := makeTestCommitObject(t, "", "orphan commit A")
+	orphanA, orphanAObj := makeTestCommitObject(t, "", "orphan commit A", false)
 	// orphanB's parent is orphanA — a valid chain, but wholly disconnected from storedCommit.
-	orphanB, orphanBObj := makeTestCommitObject(t, orphanA, "orphan commit B")
+	orphanB, orphanBObj := makeTestCommitObject(t, orphanA, "orphan commit B", false)
 
 	ancestryProof := base64.StdEncoding.EncodeToString(orphanAObj) + "\n" +
 		base64.StdEncoding.EncodeToString(orphanBObj)
@@ -302,6 +353,32 @@ func TestAddCheckpointDisconnectedAncestry(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("expected 422 for disconnected ancestry chain, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestAddCheckpointDisconnectedAncestrySHA256 is the SHA-256 variant of
+// TestAddCheckpointDisconnectedAncestry.
+func TestAddCheckpointDisconnectedAncestrySHA256(t *testing.T) {
+	baseURL, originKey, _, stop := setupServer(t)
+	defer stop()
+
+	storedCommit := strings.Repeat("1", 64)
+	post(t, baseURL, "\n"+makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", storedCommit))
+
+	orphanA, orphanAObj := makeTestCommitObject(t, "", "orphan commit A", true)
+	orphanB, orphanBObj := makeTestCommitObject(t, orphanA, "orphan commit B", true)
+
+	ancestryProof := base64.StdEncoding.EncodeToString(orphanAObj) + "\n" +
+		base64.StdEncoding.EncodeToString(orphanBObj)
+
+	signed := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", orphanB)
+	payload := ancestryProof + "\n\n" + signed
+
+	resp := post(t, baseURL, payload)
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for disconnected SHA-256 ancestry chain, got %d: %s", resp.StatusCode, body)
 	}
 }
 
@@ -331,15 +408,47 @@ func TestAddCheckpointTagImmutability(t *testing.T) {
 	}
 }
 
-// makeTestCommitObject builds a minimal, correctly-SHA1-hashed git commit
-// object suitable for use in ancestry proof payloads. parentHash may be empty
-// for a root commit. Returns the commit ID (hex SHA-1) and the wire-format
-// bytes (i.e. "commit <size>\n<content>") ready for base64 encoding.
-func makeTestCommitObject(t *testing.T, parentHash, message string) (commitID string, wireBytes []byte) {
+// TestAddCheckpointTagImmutabilitySHA256 is the SHA-256 variant of
+// TestAddCheckpointTagImmutability.
+func TestAddCheckpointTagImmutabilitySHA256(t *testing.T) {
+	baseURL, originKey, _, stop := setupServer(t)
+	defer stop()
+
+	commit1 := strings.Repeat("a", 64)
+	signed1 := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/tags/v2.0.0", commit1)
+	resp1 := post(t, baseURL, "\n"+signed1)
+	readBody(t, resp1)
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first tag checkpoint: expected 200, got %d", resp1.StatusCode)
+	}
+
+	commit2 := strings.Repeat("b", 64)
+	signed2 := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/tags/v2.0.0", commit2)
+	resp2 := post(t, baseURL, "\n"+signed2)
+	body2 := readBody(t, resp2)
+
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409 for moved tag with SHA-256, got %d: %s", resp2.StatusCode, body2)
+	}
+}
+
+// makeTestCommitObject builds a minimal, correctly-hashed git commit object
+// suitable for use in ancestry proof payloads. parentHash may be empty for a
+// root commit. If useSHA256 is true, objects are hashed with SHA-256 (producing
+// 64-char hex IDs and using 64-char placeholder tree hashes), matching Git's
+// extensions.objectFormat=sha256 mode. Returns the commit ID and the
+// wire-format bytes ("commit <size>\n<content>") ready for base64 encoding.
+func makeTestCommitObject(t *testing.T, parentHash, message string, useSHA256 bool) (commitID string, wireBytes []byte) {
 	t.Helper()
 
+	// Tree hash placeholder — must match the object format length.
+	treeHash := strings.Repeat("0", 40)
+	if useSHA256 {
+		treeHash = strings.Repeat("0", 64)
+	}
+
 	var sb strings.Builder
-	sb.WriteString("tree 0000000000000000000000000000000000000001\n")
+	sb.WriteString("tree " + treeHash + "\n")
 	if parentHash != "" {
 		sb.WriteString("parent " + parentHash + "\n")
 	}
@@ -349,14 +458,49 @@ func makeTestCommitObject(t *testing.T, parentHash, message string) (commitID st
 	sb.WriteString(message + "\n")
 	content := sb.String()
 
-	// Git hashes: SHA1("commit <size>\x00<content>")
-	h := sha1.New()
-	fmt.Fprintf(h, "commit %d\x00", len(content))
-	h.Write([]byte(content))
-	commitID = fmt.Sprintf("%x", h.Sum(nil))
+	if useSHA256 {
+		h := sha256.New()
+		fmt.Fprintf(h, "commit %d\x00", len(content))
+		h.Write([]byte(content))
+		commitID = fmt.Sprintf("%x", h.Sum(nil))
+	} else {
+		h := sha1.New()
+		fmt.Fprintf(h, "commit %d\x00", len(content))
+		h.Write([]byte(content))
+		commitID = fmt.Sprintf("%x", h.Sum(nil))
+	}
 
-	// Wire format used by the client and expected by the server.
 	wireBytes = []byte(fmt.Sprintf("commit %d\n%s", len(content), content))
 	return
+}
+
+// TestAddCheckpointValidAncestrySHA256 verifies that a properly-chained
+// SHA-256 ancestry proof is accepted by the witness.
+func TestAddCheckpointValidAncestrySHA256(t *testing.T) {
+	baseURL, originKey, _, stop := setupServer(t)
+	defer stop()
+
+	// commitA is a root commit, checkpointed first.
+	commitA, commitAObj := makeTestCommitObject(t, "", "root commit", true)
+	post(t, baseURL, "\n"+makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", commitA))
+
+	// commitB descends from commitA.
+	commitB, commitBObj := makeTestCommitObject(t, commitA, "child commit", true)
+
+	ancestryProof := base64.StdEncoding.EncodeToString(commitAObj) + "\n" +
+		base64.StdEncoding.EncodeToString(commitBObj)
+
+	signed := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/heads/main", commitB)
+	payload := ancestryProof + "\n\n" + signed
+
+	resp := post(t, baseURL, payload)
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for valid SHA-256 ancestry, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.HasPrefix(body, note.SigPrefix) {
+		t.Errorf("expected cosignature line, got: %q", body)
+	}
 }
 

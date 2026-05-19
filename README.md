@@ -59,6 +59,12 @@ For branch checkpoints, the witness does not need a full clone of the repository
 
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
+## Hash function support
+
+Git repositories use either SHA-1 or SHA-256 as their object hash, controlled by `extensions.objectFormat`. git-ratchet handles both transparently: the hash algorithm is inferred from the length of the commit ID in the checkpoint (40 hex characters → SHA-1, 64 → SHA-256). Ancestry proofs are verified using the same algorithm. No configuration is required — git-ratchet will work correctly with whichever object format the repository uses.
+
+Note: SHA-256 repositories require Git ≥ 2.29 and are not yet widely supported by hosting platforms. git-ratchet's SHA-256 support is tested synthetically (with constructed commit objects) rather than against live SHA-256 repositories.
+
 ## Witness policy
 
 A verifier's policy specifies the trusted origin key, witness keys, and quorum:
@@ -96,10 +102,6 @@ A `git-ratchet audit` command could combine several checks into a single compreh
 - **Replace ref detection**: Check for the existence of any refs under `refs/replace/` and loudly warn if found, since replace refs break the Merkle chain assumptions that git-ratchet relies on.
 
 This would provide a stronger end-to-end integrity guarantee than any of these checks in isolation.
-
-### SHA-256 object format
-
-Git's integrity model assumes collision resistance of the hash function. SHA-1 collision resistance is broken ([SHAttered](https://shattered.io/), 2017), making it theoretically possible to substitute objects deep in the DAG without altering descendant hashes. Git's transition to SHA-256 (`extensions.objectFormat = sha256`) closes this gap. git-ratchet should track SHA-256 adoption and ensure compatibility as repositories migrate.
 
 ### Policy structure and naming
 

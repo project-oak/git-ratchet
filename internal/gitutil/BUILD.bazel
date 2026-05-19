@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "gitutil",
@@ -9,4 +9,10 @@ go_library(
     ],
     importpath = "github.com/BenBirt/git-ratchet/internal/gitutil",
     visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "gitutil_test",
+    srcs = ["commit_hash_test.go"],
+    embed = [":gitutil"],
 )

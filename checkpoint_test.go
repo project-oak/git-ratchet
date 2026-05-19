@@ -3,7 +3,6 @@
 package main_test
 
 import (
-	"crypto/sha1"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -697,8 +696,8 @@ func parseParent(commitContent string) string {
 	return ""
 }
 
-func gitCommitHash(decoded []byte) (string, error) {
-	return gitutil.CommitHash(decoded, sha1.Size*2) // SHA-1: 40 hex chars
+func gitCommitHash(decoded []byte, expectedHashLen int) (string, error) {
+	return gitutil.CommitHash(decoded, expectedHashLen)
 }
 
 func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signer) *fakeWitness {
@@ -787,7 +786,7 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 					http.Error(w, "malformed base64 in ancestry", http.StatusUnprocessableEntity)
 					return
 				}
-				commitID, err := gitCommitHash(decoded)
+				commitID, err := gitCommitHash(decoded, len(newCommit))
 				if err != nil {
 					http.Error(w, "invalid commit object in ancestry", http.StatusUnprocessableEntity)
 					return
