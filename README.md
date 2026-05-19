@@ -101,10 +101,6 @@ This would provide a stronger end-to-end integrity guarantee than any of these c
 
 Git's integrity model assumes collision resistance of the hash function. SHA-1 collision resistance is broken ([SHAttered](https://shattered.io/), 2017), making it theoretically possible to substitute objects deep in the DAG without altering descendant hashes. Git's transition to SHA-256 (`extensions.objectFormat = sha256`) closes this gap. git-ratchet should track SHA-256 adoption and ensure compatibility as repositories migrate.
 
-### Subcommand library
-
-The CLI currently uses a hand-rolled `switch` over `os.Args[1]` with per-command `flag.FlagSet`s. As the number of commands grows (e.g., `audit`), this should be replaced with a proper subcommand library such as [google/subcommands](https://github.com/google/subcommands) or [cobra](https://github.com/spf13/cobra), giving us consistent help formatting, flag inheritance, and extensibility for free.
-
 ### Policy structure and naming
 
 The policy file currently uses C2SP [tlog-policy](https://c2sp.org/tlog-policy) conventions: a `log` directive names the origin, and witnesses are listed with their verifier keys. The log name (e.g., `github.com/example/repo`) is a free-form string that must match the first line of every checkpoint, but there is no formal relationship between it and the Git remote URL, repository name, or the specific branch or tag being protected.

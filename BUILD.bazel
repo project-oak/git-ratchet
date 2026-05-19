@@ -13,6 +13,7 @@ go_library(
         "//internal/note",
         "//internal/policy",
         "//internal/witness",
+        "@com_github_google_subcommands//:subcommands",
     ],
 )
 
