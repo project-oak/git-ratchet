@@ -3,7 +3,7 @@ package main
 
 import (
 	"bufio"
-	"crypto/ed25519"
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -19,9 +19,15 @@ import (
 	"github.com/BenBirt/git-ratchet/internal/note"
 )
 
+// trustedOrigin holds a trusted origin's public key and signature type.
+type trustedOrigin struct {
+	pub     crypto.PublicKey
+	sigType note.SigType
+}
+
 type Server struct {
 	witnessKey     *note.Signer
-	trustedOrigins map[string]ed25519.PublicKey
+	trustedOrigins map[string]trustedOrigin
 	stateFile      string
 	mu             sync.RWMutex
 	commits        map[string]string // branch key -> commit hash
@@ -42,8 +48,8 @@ func main() {
 		log.Fatalf("error: --key is required")
 	}
 
-	// Read witness signer key.
-	wSigner, err := note.ReadKeyFile(*keyPath, note.Ed25519Cosigner)
+	// Read witness signer key (cosigner role).
+	wSigner, err := note.ReadKeyFile(*keyPath, note.RoleCosigner)
 	if err != nil {
 		log.Fatalf("failed to read witness key: %v", err)
 	}
@@ -61,14 +67,14 @@ func main() {
 		rawOrigins = append(rawOrigins, fileOrigins...)
 	}
 
-	trustedOrigins, err := parseOrigins(rawOrigins)
+	trustedOrig, err := parseOrigins(rawOrigins)
 	if err != nil {
 		log.Fatalf("failed to parse trusted origins: %v", err)
 	}
 
 	srv := &Server{
 		witnessKey:     wSigner,
-		trustedOrigins: trustedOrigins,
+		trustedOrigins: trustedOrig,
 		stateFile:      *stateFile,
 		commits:        make(map[string]string),
 	}
@@ -142,7 +148,7 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.RLock()
-	originPub, ok := s.trustedOrigins[originSigName]
+	origin, ok := s.trustedOrigins[originSigName]
 	s.mu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("unauthorized origin: %s", originSigName), http.StatusNotFound)
@@ -150,7 +156,7 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify origin signature.
-	if err := note.VerifySignature(noteBody, sigLines[0], originPub); err != nil {
+	if err := note.VerifySignature(noteBody, sigLines[0], origin.pub, origin.sigType); err != nil {
 		http.Error(w, fmt.Sprintf("invalid origin signature: %v", err), http.StatusForbidden)
 		return
 	}
@@ -325,18 +331,18 @@ func readOriginsFile(path string) ([]string, error) {
 	return vkeys, scanner.Err()
 }
 
-func parseOrigins(origins []string) (map[string]ed25519.PublicKey, error) {
-	res := make(map[string]ed25519.PublicKey)
+func parseOrigins(origins []string) (map[string]trustedOrigin, error) {
+	res := make(map[string]trustedOrigin)
 	for _, vkey := range origins {
 		vkey = strings.TrimSpace(vkey)
 		if vkey == "" {
 			continue
 		}
-		name, _, pub, err := note.ParseVKey(vkey)
+		name, sigType, pub, err := note.ParseVKey(vkey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse trusted origin vkey %q: %w", vkey, err)
 		}
-		res[name] = pub
+		res[name] = trustedOrigin{pub: pub, sigType: sigType}
 	}
 	return res, nil
 }

@@ -6,12 +6,13 @@
 //	<commit-hash>
 //
 // where <ref> is a full Git reference such as refs/heads/<branch> or
-// refs/tags/<tag>. Signed with an Ed25519 origin key, and optionally
-// cosigned by witnesses.
+// refs/tags/<tag>. Signed with an Ed25519 or ML-DSA-44 origin key, and
+// optionally cosigned by witnesses.
 // See https://c2sp.org/signed-note for the wire format.
 package note
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,105 +22,176 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"filippo.io/mldsa"
 )
 
-// KeyType identifies the role of an Ed25519 key in the signing protocol.
-// The value doubles as the type byte used in key hashes and vkeys.
-type KeyType byte
+// SigType is the wire type byte used in key hashes and vkeys.
+// Ed25519 has distinct type bytes per role (0x01 for origin, 0x04 for
+// cosigner), but ML-DSA-44 uses 0x06 for both roles.
+type SigType byte
 
 const (
-	// Ed25519Origin is the key type for Ed25519 origin (log) keys
+	// Ed25519Origin is the type byte for Ed25519 origin (log) keys
 	// per the C2SP signed-note specification.
-	Ed25519Origin KeyType = 0x01
+	Ed25519Origin SigType = 0x01
 
-	// Ed25519Cosigner is the key type for Ed25519 cosigner keys
+	// Ed25519Cosigner is the type byte for Ed25519 cosigner keys
 	// per the C2SP tlog-cosignature specification.
-	Ed25519Cosigner KeyType = 0x04
+	Ed25519Cosigner SigType = 0x04
+
+	// MLDSA44 is the type byte for ML-DSA-44 keys (both origin
+	// and cosigner) per the C2SP tlog-checkpoint and tlog-cosignature
+	// specifications.
+	MLDSA44 SigType = 0x06
 )
 
-// TODO(ML-DSA-44): To support ML-DSA-44 signatures (type byte 0x06) for both
-// origins and cosigners per tlog-checkpoint and tlog-cosignature:
-//
-//   - Split KeyType into a SigType (the wire type byte: 0x01, 0x04, 0x06) and
-//     a KeyRole (origin vs cosigner). Ed25519 has distinct type bytes per role
-//     (0x01/0x04), but ML-DSA-44 uses 0x06 for both roles.
-//   - Generalise Signer to hold crypto.Signer / crypto.PublicKey interfaces
-//     instead of concrete ed25519 types, since ML-DSA-44 keys are 1312-byte
-//     public / ~2560-byte private, with 2420-byte signatures.
-//   - Update Sign/Cosign to dispatch on SigType for message construction:
-//     ML-DSA-44 cosignatures commit to the cosigner name in the signed message
-//     (unlike Ed25519).
-//   - Update VerifySignature/VerifyCosignature to accept crypto.PublicKey and
-//     dispatch on SigType for signature size and verification algorithm.
-//   - Update ParseVKey to handle the 1312-byte ML-DSA-44 public key encoding.
+// KeyRole distinguishes origin (log) keys from cosigner (witness) keys.
+type KeyRole int
 
-// cosignatureV1Prefix is the header prepended to the cosignature message.
+const (
+	RoleOrigin KeyRole = iota
+	RoleCosigner
+)
+
+// cosignatureV1Prefix is the header prepended to Ed25519 cosignature messages.
 const cosignatureV1Prefix = "cosignature/v1"
+
+// cosignedMessageLabel is the 12-byte label for ML-DSA-44 cosigned messages.
+const cosignedMessageLabel = "subtree/v1\n\x00"
 
 // SigPrefix is the em dash prefix for signature lines in signed notes.
 const SigPrefix = "\u2014 "
 
-// Signer holds an Ed25519 key pair for signing notes.
-// The Type field determines the key's role (origin or cosigner), which
-// controls key hash computation, vkey formatting, and which signing
-// method (Sign vs Cosign) is permitted.
+// Ed25519 sizes for convenience.
+const (
+	ed25519PubKeySize = ed25519.PublicKeySize // 32
+	ed25519SigSize    = ed25519.SignatureSize // 64
+	ed25519SeedSize   = ed25519.SeedSize      // 32
+)
+
+// ML-DSA-44 sizes.
+var (
+	mldsa44PubKeySize = mldsa.MLDSA44().PublicKeySize() // 1312
+	mldsa44SigSize    = mldsa.MLDSA44().SignatureSize() // 2420
+	mldsa44SeedSize   = mldsa.PrivateKeySize            // 32
+)
+
+// Signer holds a key pair for signing notes.
+// The SigType and Role fields determine signing behaviour.
 type Signer struct {
-	Name string
-	Type KeyType
-	hash [4]byte
-	priv ed25519.PrivateKey
-	pub  ed25519.PublicKey
+	Name    string
+	SigType SigType
+	Role    KeyRole
+	hash    [4]byte
+	signer  crypto.Signer
+	pub     crypto.PublicKey
+	seed    []byte // 32-byte seed (Ed25519 or ML-DSA-44)
 }
 
-// GenerateKey creates a new random Ed25519 signer of the given type.
-func GenerateKey(name string, keyType KeyType) (*Signer, error) {
-	_, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		return nil, err
+// GenerateKey creates a new random signer with the given algorithm and role.
+func GenerateKey(name string, sigType SigType, role KeyRole) (*Signer, error) {
+	switch sigType {
+	case Ed25519Origin, Ed25519Cosigner:
+		_, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			return nil, err
+		}
+		return newEd25519Signer(name, priv, sigType, role), nil
+	case MLDSA44:
+		priv, err := mldsa.GenerateKey(mldsa.MLDSA44())
+		if err != nil {
+			return nil, err
+		}
+		return newMLDSA44Signer(name, priv, role), nil
+	default:
+		return nil, fmt.Errorf("unsupported signature type: 0x%02x", sigType)
 	}
-	return newSigner(name, priv, keyType), nil
 }
 
-// NewSigner creates a signer from a name, Ed25519 seed, and key type.
-func NewSigner(name string, seed []byte, keyType KeyType) (*Signer, error) {
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("invalid seed size: got %d, want %d", len(seed), ed25519.SeedSize)
+// NewSigner creates a signer from a name, 32-byte seed, signature type, and role.
+func NewSigner(name string, seed []byte, sigType SigType, role KeyRole) (*Signer, error) {
+	switch sigType {
+	case Ed25519Origin, Ed25519Cosigner:
+		if len(seed) != ed25519SeedSize {
+			return nil, fmt.Errorf("invalid Ed25519 seed size: got %d, want %d", len(seed), ed25519SeedSize)
+		}
+		return newEd25519Signer(name, ed25519.NewKeyFromSeed(seed), sigType, role), nil
+	case MLDSA44:
+		if len(seed) != mldsa44SeedSize {
+			return nil, fmt.Errorf("invalid ML-DSA-44 seed size: got %d, want %d", len(seed), mldsa44SeedSize)
+		}
+		priv, err := mldsa.NewPrivateKey(mldsa.MLDSA44(), seed)
+		if err != nil {
+			return nil, fmt.Errorf("creating ML-DSA-44 key: %w", err)
+		}
+		return newMLDSA44Signer(name, priv, role), nil
+	default:
+		return nil, fmt.Errorf("unsupported signature type: 0x%02x", sigType)
 	}
-	return newSigner(name, ed25519.NewKeyFromSeed(seed), keyType), nil
 }
 
-func newSigner(name string, priv ed25519.PrivateKey, keyType KeyType) *Signer {
+func newEd25519Signer(name string, priv ed25519.PrivateKey, sigType SigType, role KeyRole) *Signer {
 	pub := priv.Public().(ed25519.PublicKey)
 	return &Signer{
-		Name: name,
-		Type: keyType,
-		hash: keyHashWithType(name, pub, byte(keyType)),
-		priv: priv,
-		pub:  pub,
+		Name:    name,
+		SigType: sigType,
+		Role:    role,
+		hash:    keyHash(name, pubKeyBytes(pub), byte(sigType)),
+		signer:  priv,
+		pub:     pub,
+		seed:    priv.Seed(),
 	}
 }
 
-// VKey returns the verifier key string formatted with this signer's key type.
-func (s *Signer) VKey() string {
-	return formatVKeyWithType(s.Name, s.pub, s.Type)
+func newMLDSA44Signer(name string, priv *mldsa.PrivateKey, role KeyRole) *Signer {
+	pub := priv.PublicKey()
+	return &Signer{
+		Name:    name,
+		SigType: MLDSA44,
+		Role:    role,
+		hash:    keyHash(name, pub.Bytes(), byte(MLDSA44)),
+		signer:  priv,
+		pub:     pub,
+		seed:    priv.Bytes(),
+	}
 }
 
-// Seed returns the Ed25519 seed bytes.
+// VKey returns the verifier key string: name+hexID+base64(typeByte||pubkey).
+func (s *Signer) VKey() string {
+	return FormatVKey(s.Name, s.pub, s.SigType)
+}
+
+// Seed returns the 32-byte seed.
 func (s *Signer) Seed() []byte {
-	return s.priv.Seed()
+	return s.seed
 }
 
 // Sign creates a signed note from a body text.
-// The signer must have type Ed25519Origin.
+// The signer must have RoleOrigin.
 // The body must end with a newline.
 func Sign(body string, signer *Signer) (string, error) {
-	if signer.Type != Ed25519Origin {
-		return "", fmt.Errorf("Sign requires an origin key (type 0x%02x), got 0x%02x", Ed25519Origin, signer.Type)
+	if signer.Role != RoleOrigin {
+		return "", fmt.Errorf("Sign requires an origin key, got cosigner")
 	}
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	sig := ed25519.Sign(signer.priv, []byte(body))
+
+	var sig []byte
+	var err error
+
+	switch signer.SigType {
+	case Ed25519Origin:
+		sig = ed25519.Sign(signer.signer.(ed25519.PrivateKey), []byte(body))
+	case MLDSA44:
+		sig, err = signer.signer.Sign(nil, []byte(body), &mldsa.Options{})
+		if err != nil {
+			return "", fmt.Errorf("ML-DSA-44 sign: %w", err)
+		}
+	default:
+		return "", fmt.Errorf("unsupported origin signature type: 0x%02x", signer.SigType)
+	}
 
 	var raw []byte
 	raw = append(raw, signer.hash[:]...)
@@ -129,13 +201,17 @@ func Sign(body string, signer *Signer) (string, error) {
 	return body + "\n" + line + "\n", nil
 }
 
-// Cosign creates a cosignature line for a signed note per the C2SP
-// tlog-cosignature specification. The cosignature signs a message consisting
-// of "cosignature/v1\ntime <unix-seconds>\n" prepended to the note body.
-// The signer must have type Ed25519Cosigner.
+// Cosign creates a cosignature line for a signed note.
+// The signer must have RoleCosigner.
+//
+// For Ed25519: per tlog-cosignature, signs "cosignature/v1\ntime <unix>\n<body>".
+// Wire format: keyID(4) || timestamp(8) || signature(64).
+//
+// For ML-DSA-44: per tlog-cosignature, signs a binary cosigned_message struct.
+// Wire format: keyID(4) || timestamp(8) || signature(2420).
 func Cosign(signedNote string, signer *Signer) (string, error) {
-	if signer.Type != Ed25519Cosigner {
-		return "", fmt.Errorf("Cosign requires a cosigner key (type 0x%02x), got 0x%02x", Ed25519Cosigner, signer.Type)
+	if signer.Role != RoleCosigner {
+		return "", fmt.Errorf("Cosign requires a cosigner key, got origin")
 	}
 
 	body, err := ExtractBody(signedNote)
@@ -145,17 +221,43 @@ func Cosign(signedNote string, signer *Signer) (string, error) {
 
 	timestamp := uint64(time.Now().Unix())
 
-	// Per tlog-cosignature, the signed message is:
-	//   cosignature/v1\n
-	//   time <decimal timestamp>\n
-	//   <checkpoint body>
-	cosignMsg := cosignatureV1Prefix + "\n" +
-		"time " + strconv.FormatUint(timestamp, 10) + "\n" +
-		body
+	var sig []byte
 
-	sig := ed25519.Sign(signer.priv, []byte(cosignMsg))
+	switch signer.SigType {
+	case Ed25519Cosigner:
+		// Per tlog-cosignature, the signed message for Ed25519 is:
+		//   cosignature/v1\n
+		//   time <decimal timestamp>\n
+		//   <checkpoint body>
+		cosignMsg := cosignatureV1Prefix + "\n" +
+			"time " + strconv.FormatUint(timestamp, 10) + "\n" +
+			body
+		sig = ed25519.Sign(signer.signer.(ed25519.PrivateKey), []byte(cosignMsg))
 
-	// Wire format: keyID(4) || timestamp(8) || signature(64).
+	case MLDSA44:
+		// Per tlog-cosignature, the signed message for ML-DSA-44 is
+		// a binary cosigned_message struct:
+		//   label[12] = "subtree/v1\n\0"
+		//   cosigner_name<1..2^8-1>  (length-prefixed)
+		//   timestamp (uint64)
+		//   log_origin<1..2^8-1>     (length-prefixed)
+		//   start (uint64) = 0       (full checkpoint)
+		//   end (uint64)
+		//   hash[32]
+		cosignMsg, err := buildCosignedMessage(signer.Name, timestamp, body)
+		if err != nil {
+			return "", fmt.Errorf("building cosigned message: %w", err)
+		}
+		sig, err = signer.signer.Sign(nil, cosignMsg, &mldsa.Options{})
+		if err != nil {
+			return "", fmt.Errorf("ML-DSA-44 cosign: %w", err)
+		}
+
+	default:
+		return "", fmt.Errorf("unsupported cosigner signature type: 0x%02x", signer.SigType)
+	}
+
+	// Wire format: keyID(4) || timestamp(8) || signature.
 	var raw []byte
 	raw = append(raw, signer.hash[:]...)
 	var ts [8]byte
@@ -164,6 +266,59 @@ func Cosign(signedNote string, signer *Signer) (string, error) {
 	raw = append(raw, sig...)
 
 	return SigPrefix + signer.Name + " " + base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// buildCosignedMessage constructs the binary cosigned_message for ML-DSA-44
+// cosignatures per the C2SP tlog-cosignature specification.
+//
+// The body is a checkpoint body like "<origin> <ref>\n<commit>\n".
+// We parse the origin line and the tree hash/size from it.
+// For git-ratchet checkpoints, the body format is:
+//
+//	<origin> <ref>\n
+//	<commit-hash>\n
+//
+// The tlog-cosignature spec defines the cosigned_message for full checkpoints
+// (start=0) where end is the tree size and hash is the root hash.
+// Since git-ratchet checkpoints don't have a tree size or Merkle root,
+// we use the commit hash as the 32-byte hash and set end=0.
+func buildCosignedMessage(cosignerName string, timestamp uint64, body string) ([]byte, error) {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) < 2 {
+		return nil, fmt.Errorf("checkpoint body too short")
+	}
+
+	// Origin is the first line (e.g., "example.com/log refs/heads/main").
+	origin := lines[0]
+
+	// The commit hash line. For the binary message we need a 32-byte hash.
+	// If the commit is a hex-encoded SHA-1 (40 chars) or SHA-256 (64 chars),
+	// we SHA-256 it to get a fixed 32-byte value.
+	commitHash := strings.TrimSpace(lines[1])
+	h := sha256.Sum256([]byte(commitHash))
+
+	var msg []byte
+	// label[12]
+	msg = append(msg, cosignedMessageLabel...)
+	// cosigner_name<1..2^8-1>: length byte + name
+	msg = append(msg, byte(len(cosignerName)))
+	msg = append(msg, []byte(cosignerName)...)
+	// timestamp (uint64 big-endian)
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], timestamp)
+	msg = append(msg, ts[:]...)
+	// log_origin<1..2^8-1>: length byte + origin
+	msg = append(msg, byte(len(origin)))
+	msg = append(msg, []byte(origin)...)
+	// start (uint64) = 0 for full checkpoint
+	var zero [8]byte
+	msg = append(msg, zero[:]...)
+	// end (uint64) = 0 (git-ratchet doesn't track tree sizes)
+	msg = append(msg, zero[:]...)
+	// hash[32]
+	msg = append(msg, h[:]...)
+
+	return msg, nil
 }
 
 // AppendSignature appends a signature line to a signed note.
@@ -200,44 +355,86 @@ func ParseSignedNote(data string) (body string, sigLines []string, err error) {
 }
 
 // VerifySignature verifies an origin signature line against a public key.
-func VerifySignature(body, sigLine string, pub ed25519.PublicKey) error {
+func VerifySignature(body, sigLine string, pub crypto.PublicKey, sigType SigType) error {
 	raw, err := DecodeSigLine(sigLine)
 	if err != nil {
 		return err
 	}
-	if len(raw) < 4+ed25519.SignatureSize {
-		return fmt.Errorf("signature too short")
-	}
-	if !ed25519.Verify(pub, []byte(body), raw[4:]) {
-		return fmt.Errorf("signature verification failed")
+
+	switch sigType {
+	case Ed25519Origin:
+		if len(raw) < 4+ed25519SigSize {
+			return fmt.Errorf("Ed25519 signature too short")
+		}
+		edPub, ok := pub.(ed25519.PublicKey)
+		if !ok {
+			return fmt.Errorf("expected Ed25519 public key")
+		}
+		if !ed25519.Verify(edPub, []byte(body), raw[4:]) {
+			return fmt.Errorf("signature verification failed")
+		}
+
+	case MLDSA44:
+		if len(raw) < 4+mldsa44SigSize {
+			return fmt.Errorf("ML-DSA-44 signature too short")
+		}
+		mlPub, ok := pub.(*mldsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("expected ML-DSA-44 public key")
+		}
+		if err := mldsa.Verify(mlPub, []byte(body), raw[4:], &mldsa.Options{}); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unsupported origin signature type: 0x%02x", sigType)
 	}
 	return nil
 }
 
-// VerifyCosignature verifies a witness cosignature line against a public key
-// per the C2SP tlog-cosignature specification. The verification reconstructs
-// the signed message from the embedded timestamp and the note body.
-func VerifyCosignature(body, sigLine string, pub ed25519.PublicKey) error {
+// VerifyCosignature verifies a witness cosignature line against a public key.
+func VerifyCosignature(body, sigLine string, pub crypto.PublicKey, sigType SigType, cosignerName string) error {
 	raw, err := DecodeSigLine(sigLine)
 	if err != nil {
 		return err
 	}
-	if len(raw) < 4+8+ed25519.SignatureSize {
-		return fmt.Errorf("cosignature too short")
-	}
-	// The raw bytes are: KeyHash(4) || timestamp(8) || signature(64).
-	timestamp := binary.BigEndian.Uint64(raw[4 : 4+8])
 
-	// Reconstruct the cosignature message per tlog-cosignature:
-	//   cosignature/v1\n
-	//   time <decimal timestamp>\n
-	//   <checkpoint body>
-	cosignMsg := cosignatureV1Prefix + "\n" +
-		"time " + strconv.FormatUint(timestamp, 10) + "\n" +
-		body
+	switch sigType {
+	case Ed25519Cosigner:
+		if len(raw) < 4+8+ed25519SigSize {
+			return fmt.Errorf("Ed25519 cosignature too short")
+		}
+		edPub, ok := pub.(ed25519.PublicKey)
+		if !ok {
+			return fmt.Errorf("expected Ed25519 public key")
+		}
+		timestamp := binary.BigEndian.Uint64(raw[4 : 4+8])
+		cosignMsg := cosignatureV1Prefix + "\n" +
+			"time " + strconv.FormatUint(timestamp, 10) + "\n" +
+			body
+		if !ed25519.Verify(edPub, []byte(cosignMsg), raw[4+8:]) {
+			return fmt.Errorf("cosignature verification failed")
+		}
 
-	if !ed25519.Verify(pub, []byte(cosignMsg), raw[4+8:]) {
-		return fmt.Errorf("cosignature verification failed")
+	case MLDSA44:
+		if len(raw) < 4+8+mldsa44SigSize {
+			return fmt.Errorf("ML-DSA-44 cosignature too short")
+		}
+		mlPub, ok := pub.(*mldsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("expected ML-DSA-44 public key")
+		}
+		timestamp := binary.BigEndian.Uint64(raw[4 : 4+8])
+		cosignMsg, err := buildCosignedMessage(cosignerName, timestamp, body)
+		if err != nil {
+			return fmt.Errorf("building cosigned message: %w", err)
+		}
+		if err := mldsa.Verify(mlPub, cosignMsg, raw[4+8:], &mldsa.Options{}); err != nil {
+			return fmt.Errorf("cosignature verification failed: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unsupported cosigner signature type: 0x%02x", sigType)
 	}
 	return nil
 }
@@ -270,30 +467,20 @@ func DecodeSigLine(line string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(rest[i+1:])
 }
 
-// --- Verifier key format ---
-
-// formatVKeyWithType formats a verifier key with the given key type.
-func formatVKeyWithType(name string, pub ed25519.PublicKey, keyType KeyType) string {
-	kh := keyHashWithType(name, pub, byte(keyType))
-	data := append([]byte{byte(keyType)}, pub...)
+// FormatVKey formats a verifier key: name+hexID+base64(typeByte||pubkey).
+func FormatVKey(name string, pub crypto.PublicKey, sigType SigType) string {
+	pubBytes := pubKeyBytes(pub)
+	kh := keyHash(name, pubBytes, byte(sigType))
+	data := append([]byte{byte(sigType)}, pubBytes...)
 	return fmt.Sprintf("%s+%08x+%s", name,
 		binary.BigEndian.Uint32(kh[:]),
 		base64.StdEncoding.EncodeToString(data))
 }
 
-// FormatVKey formats an origin verifier key: name+hexID+base64(0x01||pubkey).
-func FormatVKey(name string, pub ed25519.PublicKey) string {
-	return formatVKeyWithType(name, pub, Ed25519Origin)
-}
-
-// FormatCosignVKey formats a cosigner verifier key: name+hexID+base64(0x04||pubkey).
-func FormatCosignVKey(name string, pub ed25519.PublicKey) string {
-	return formatVKeyWithType(name, pub, Ed25519Cosigner)
-}
-
-// ParseVKey parses a verifier key string, returning the name, key type, and
-// public key. Accepts both origin (0x01) and cosigner (0x04) key types.
-func ParseVKey(vkey string) (string, KeyType, ed25519.PublicKey, error) {
+// ParseVKey parses a verifier key string, returning the name, sig type, and
+// public key. Accepts Ed25519 origin (0x01), Ed25519 cosigner (0x04), and
+// ML-DSA-44 (0x06) key types.
+func ParseVKey(vkey string) (string, SigType, crypto.PublicKey, error) {
 	parts := strings.SplitN(vkey, "+", 3)
 	if len(parts) != 3 {
 		return "", 0, nil, fmt.Errorf("invalid vkey: %q", vkey)
@@ -302,67 +489,106 @@ func ParseVKey(vkey string) (string, KeyType, ed25519.PublicKey, error) {
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("invalid vkey base64: %w", err)
 	}
-	keyType := KeyType(data[0])
-	if len(data) < 1 || (keyType != Ed25519Origin && keyType != Ed25519Cosigner) {
+	if len(data) < 1 {
+		return "", 0, nil, fmt.Errorf("empty vkey data")
+	}
+	sigType := SigType(data[0])
+	keyData := data[1:]
+
+	switch sigType {
+	case Ed25519Origin, Ed25519Cosigner:
+		if len(keyData) != ed25519PubKeySize {
+			return "", 0, nil, fmt.Errorf("invalid Ed25519 public key size: got %d, want %d", len(keyData), ed25519PubKeySize)
+		}
+		return parts[0], sigType, ed25519.PublicKey(keyData), nil
+
+	case MLDSA44:
+		if len(keyData) != mldsa44PubKeySize {
+			return "", 0, nil, fmt.Errorf("invalid ML-DSA-44 public key size: got %d, want %d", len(keyData), mldsa44PubKeySize)
+		}
+		pub, err := mldsa.NewPublicKey(mldsa.MLDSA44(), keyData)
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("parsing ML-DSA-44 public key: %w", err)
+		}
+		return parts[0], sigType, pub, nil
+
+	default:
 		return "", 0, nil, fmt.Errorf("unsupported key type: 0x%02x", data[0])
 	}
-	pub := ed25519.PublicKey(data[1:])
-	if len(pub) != ed25519.PublicKeySize {
-		return "", 0, nil, fmt.Errorf("invalid public key size")
-	}
-	return parts[0], keyType, pub, nil
 }
 
-// KeyHash returns the 4-byte key hash for a name+public-key pair using
-// key type 0x01 (Ed25519 origin/log key). This is the value embedded in
-// the leading bytes of every origin signature line.
-func KeyHash(name string, pub ed25519.PublicKey) [4]byte {
-	return keyHashWithType(name, pub, byte(Ed25519Origin))
-}
-
-// CosignKeyHash returns the 4-byte key hash for a name+public-key pair using
-// key type 0x04 (Ed25519 cosigner key) per the C2SP tlog-cosignature
-// specification. This is the value embedded in the leading bytes of every
-// cosignature line.
-func CosignKeyHash(name string, pub ed25519.PublicKey) [4]byte {
-	return keyHashWithType(name, pub, byte(Ed25519Cosigner))
-}
-
-// keyHashWithType computes the 4-byte key hash using the given type byte:
+// KeyHash returns the 4-byte key hash for a name + public key + sig type.
 //
 //	SHA-256(name || "\n" || typeByte || publicKey)[:4]
-func keyHashWithType(name string, pub ed25519.PublicKey, typeByte byte) [4]byte {
+func KeyHash(name string, pub crypto.PublicKey, sigType SigType) [4]byte {
+	return keyHash(name, pubKeyBytes(pub), byte(sigType))
+}
+
+func keyHash(name string, pubBytes []byte, typeByte byte) [4]byte {
 	h := sha256.New()
 	h.Write([]byte(name + "\n"))
 	h.Write([]byte{typeByte})
-	h.Write(pub)
+	h.Write(pubBytes)
 	var id [4]byte
 	copy(id[:], h.Sum(nil)[:4])
 	return id
 }
 
-// --- Key file I/O ---
+// pubKeyBytes returns the raw bytes for a public key.
+func pubKeyBytes(pub crypto.PublicKey) []byte {
+	switch k := pub.(type) {
+	case ed25519.PublicKey:
+		return []byte(k)
+	case *mldsa.PublicKey:
+		return k.Bytes()
+	default:
+		panic(fmt.Sprintf("unsupported public key type: %T", pub))
+	}
+}
 
-// ReadKeyFile reads a signer from a key file (line 1: name, line 2: base64 seed).
-// The caller specifies the key type to assign to the resulting signer.
-func ReadKeyFile(path string, keyType KeyType) (*Signer, error) {
+// Key file format:
+//   Line 1: vkey string (name+hexID+base64(typeByte||pubkey))
+//   Line 2: base64-encoded 32-byte seed
+
+// ReadKeyFile reads a signer from a key file.
+// The role is determined by the caller (origin vs cosigner).
+func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	if len(lines) != 2 {
-		return nil, fmt.Errorf("key file must have 2 lines: name and base64 seed")
+		return nil, fmt.Errorf("key file must have 2 lines: vkey and base64 seed")
 	}
+
+	// Parse the vkey to get name, sigType, and public key.
+	name, sigType, _, err := ParseVKey(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return nil, fmt.Errorf("parsing vkey: %w", err)
+	}
+
 	seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[1]))
 	if err != nil {
 		return nil, fmt.Errorf("decoding seed: %w", err)
 	}
-	return NewSigner(strings.TrimSpace(lines[0]), seed, keyType)
+
+	// For ML-DSA-44, use the ML-DSA sigType regardless of the caller-specified role.
+	// For Ed25519, select the correct sigType based on role.
+	if sigType == MLDSA44 {
+		return NewSigner(name, seed, MLDSA44, role)
+	}
+	// Ed25519: pick the correct type byte based on role.
+	if role == RoleCosigner {
+		sigType = Ed25519Cosigner
+	} else {
+		sigType = Ed25519Origin
+	}
+	return NewSigner(name, seed, sigType, role)
 }
 
-// WriteKeyFile writes a signer's private key to a file.
+// WriteKeyFile writes a signer's key to a file in vkey + seed format.
 func WriteKeyFile(path string, s *Signer) error {
-	content := s.Name + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
 	return os.WriteFile(path, []byte(content), 0600)
 }

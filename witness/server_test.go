@@ -51,9 +51,9 @@ func getFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Signer {
+func mustGenerateKey(t *testing.T, name string, sigType note.SigType, role note.KeyRole) *note.Signer {
 	t.Helper()
-	s, err := note.GenerateKey(name, keyType)
+	s, err := note.GenerateKey(name, sigType, role)
 	if err != nil {
 		t.Fatalf("generating key %s: %v", name, err)
 	}
@@ -62,7 +62,7 @@ func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Sign
 
 func mustWriteKey(t *testing.T, path string, s *note.Signer) {
 	t.Helper()
-	content := s.Name + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +126,8 @@ func readBody(t *testing.T, resp *http.Response) string {
 func setupServer(t *testing.T) (baseURL string, originKey, witnessKey *note.Signer, stop func()) {
 	t.Helper()
 	bin := mustFindWitnessBinary(t)
-	originKey = mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey = mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey = mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey = mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	tmpDir := t.TempDir()
 	witnessKeyPath := filepath.Join(tmpDir, "witness.key")
@@ -164,9 +164,12 @@ func TestAddCheckpointFirstSubmission(t *testing.T) {
 		t.Errorf("expected cosignature line, got: %q", body)
 	}
 
-	_, _, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
+	_, _, witnessPub, err := note.ParseVKey(witnessKey.VKey())
+	if err != nil {
+		t.Fatalf("parsing witness vkey: %v", err)
+	}
 	noteBody := "example.com/repo refs/heads/main\n" + commit + "\n"
-	if err := note.VerifyCosignature(noteBody, body, witnessPub); err != nil {
+	if err := note.VerifyCosignature(noteBody, body, witnessPub, note.Ed25519Cosigner, "test-witness"); err != nil {
 		t.Errorf("cosignature verification failed: %v", err)
 	}
 }
@@ -191,9 +194,12 @@ func TestAddCheckpointFirstSubmissionSHA256(t *testing.T) {
 		t.Errorf("expected cosignature line, got: %q", body)
 	}
 
-	_, _, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
+	_, _, witnessPub, err := note.ParseVKey(witnessKey.VKey())
+	if err != nil {
+		t.Fatalf("parsing witness vkey: %v", err)
+	}
 	noteBody := "example.com/repo refs/heads/main\n" + commit + "\n"
-	if err := note.VerifyCosignature(noteBody, body, witnessPub); err != nil {
+	if err := note.VerifyCosignature(noteBody, body, witnessPub, note.Ed25519Cosigner, "test-witness"); err != nil {
 		t.Errorf("cosignature verification failed: %v", err)
 	}
 }
@@ -267,7 +273,7 @@ func TestAddCheckpointInvalidSignature(t *testing.T) {
 	defer stop()
 
 	// Sign with a key the server doesn't know about.
-	rogue := mustGenerateKey(t, "rogue-origin", note.Ed25519Origin)
+	rogue := mustGenerateKey(t, "rogue-origin", note.Ed25519Origin, note.RoleOrigin)
 	commit := strings.Repeat("c", 40)
 	signed := makeSignedCheckpoint(t, rogue, "example.com/repo", "refs/heads/main", commit)
 	payload := "\n" + signed

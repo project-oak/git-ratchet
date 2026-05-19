@@ -115,10 +115,6 @@ This creates an awkward gap: a single policy covers one "log" (origin key), but 
 
 If the policy encodes the full ref (e.g., `github.com/example/repo refs/heads/main`), the `--branch` and `--tag` flags on `verify` become redundant — the ref path and its kind can be derived from the policy's log name. This would simplify the verify CLI to just `git-ratchet verify --policy <path>`.
 
-### Post-quantum signatures (ML-DSA-44)
-
-The C2SP [tlog-cosignature](https://c2sp.org/tlog-cosignature) specification defines ML-DSA-44 cosignatures (type byte `0x06`), and [tlog-checkpoint](https://c2sp.org/tlog-checkpoint) permits origins to use ML-DSA-44 signatures as well. Adding ML-DSA-44 support would require generalising the `Signer` type to handle different key material sizes and separating the wire type byte from the key role, since ML-DSA-44 uses `0x06` for both origins and cosigners (unlike Ed25519, which uses `0x01` and `0x04` respectively). See the `TODO(ML-DSA-44)` in `internal/note/note.go` for implementation notes.
-
 ## Building
 
 Requires [Bazel](https://bazel.build/) 9.1+:

@@ -24,8 +24,8 @@ func TestIntegration(t *testing.T) {
 	gitRatchetBin := mustFindBinary(t)
 	witnessBin := mustFindWitnessBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash1 := makeCommit(t, repoDir, "initial commit")
@@ -118,8 +118,8 @@ func TestTagIntegration(t *testing.T) {
 	gitRatchetBin := mustFindBinary(t)
 	witnessBin := mustFindWitnessBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "tagged release")
@@ -289,9 +289,9 @@ func mustFindWitnessBinary(t *testing.T) string {
 	return ""
 }
 
-func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Signer {
+func mustGenerateKey(t *testing.T, name string, sigType note.SigType, role note.KeyRole) *note.Signer {
 	t.Helper()
-	s, err := note.GenerateKey(name, keyType)
+	s, err := note.GenerateKey(name, sigType, role)
 	if err != nil {
 		t.Fatalf("generating key %s: %v", name, err)
 	}
@@ -325,7 +325,7 @@ func makeCommit(t *testing.T, dir, msg string) string {
 func writeKeyFile(t *testing.T, dir string, s *note.Signer) string {
 	t.Helper()
 	p := filepath.Join(dir, "origin.key")
-	content := s.Name + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
 	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func writeKeyFile(t *testing.T, dir string, s *note.Signer) string {
 
 func mustWriteKey(t *testing.T, path string, s *note.Signer) {
 	t.Helper()
-	content := s.Name + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}

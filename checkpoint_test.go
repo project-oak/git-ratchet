@@ -25,8 +25,8 @@ import (
 func TestCheckpointBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
@@ -71,7 +71,7 @@ func TestCheckpointBasic(t *testing.T) {
 		t.Fatalf("expected 2 signature lines, got %d: %v", len(sigLines), sigLines)
 	}
 
-	originName, _, originPub, err := note.ParseVKey(originKey.VKey())
+	originName, originSigType, originPub, err := note.ParseVKey(originKey.VKey())
 	if err != nil {
 		t.Fatalf("parsing origin vkey: %v", err)
 	}
@@ -82,15 +82,15 @@ func TestCheckpointBasic(t *testing.T) {
 	if originSigName != originName {
 		t.Errorf("origin sig name: got %q, want %q", originSigName, originName)
 	}
-	if err := note.VerifySignature(body, sigLines[0], originPub); err != nil {
+	if err := note.VerifySignature(body, sigLines[0], originPub, originSigType); err != nil {
 		t.Errorf("origin signature invalid: %v", err)
 	}
 
-	_, _, witnessPub, err := note.ParseVKey(witnessKey.VKey())
+	witnessName, witnessSigType, witnessPub, err := note.ParseVKey(witnessKey.VKey())
 	if err != nil {
 		t.Fatalf("parsing witness vkey: %v", err)
 	}
-	if err := note.VerifyCosignature(body, sigLines[1], witnessPub); err != nil {
+	if err := note.VerifyCosignature(body, sigLines[1], witnessPub, witnessSigType, witnessName); err != nil {
 		t.Errorf("witness cosignature invalid: %v", err)
 	}
 }
@@ -100,8 +100,8 @@ func TestCheckpointBasic(t *testing.T) {
 func TestCheckpointMultipleCommits(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -154,8 +154,8 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 func TestCheckpointInsufficientWitnesses(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	ws := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -187,8 +187,8 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 func TestVerifyBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -227,8 +227,8 @@ func TestVerifyBasic(t *testing.T) {
 func TestVerifyNoCheckpoint(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	_ = makeCommit(t, repoDir, "initial commit")
@@ -255,8 +255,8 @@ func TestVerifyNoCheckpoint(t *testing.T) {
 func TestVerifyAheadOfCheckpoint(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -301,8 +301,8 @@ func TestVerifyAheadOfCheckpoint(t *testing.T) {
 func TestVerifyTamperedNote(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -362,8 +362,8 @@ func TestVerifyTamperedNote(t *testing.T) {
 func TestVerifyInsufficientCosigs(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "initial commit")
@@ -407,8 +407,8 @@ func TestVerifyInsufficientCosigs(t *testing.T) {
 func TestTagCheckpointBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
@@ -457,8 +457,8 @@ func TestTagCheckpointBasic(t *testing.T) {
 func TestTagVerifyBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -498,8 +498,8 @@ func TestTagVerifyBasic(t *testing.T) {
 func TestTagVerifyMoved(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -544,8 +544,8 @@ func TestTagVerifyMoved(t *testing.T) {
 func TestTagCheckpointImmutability(t *testing.T) {
 	binary := mustFindBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 	ws := newFakeWitness(t, witnessKey, originKey)
 	defer ws.Close()
 
@@ -603,9 +603,9 @@ func mustFindBinary(t *testing.T) string {
 	return ""
 }
 
-func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Signer {
+func mustGenerateKey(t *testing.T, name string, sigType note.SigType, role note.KeyRole) *note.Signer {
 	t.Helper()
-	s, err := note.GenerateKey(name, keyType)
+	s, err := note.GenerateKey(name, sigType, role)
 	if err != nil {
 		t.Fatalf("generating key %s: %v", name, err)
 	}
@@ -639,7 +639,7 @@ func makeCommit(t *testing.T, dir, msg string) string {
 func writeKeyFile(t *testing.T, dir string, s *note.Signer) string {
 	t.Helper()
 	p := filepath.Join(dir, "origin.key")
-	content := s.Name + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
 	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +702,7 @@ func gitCommitHash(decoded []byte, expectedHashLen int) (string, error) {
 
 func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signer) *fakeWitness {
 	t.Helper()
-	_, _, originPub, err := note.ParseVKey(originKey.VKey())
+	_, originSigType, originPub, err := note.ParseVKey(originKey.VKey())
 	if err != nil {
 		t.Fatalf("parsing origin vkey: %v", err)
 	}
@@ -751,7 +751,7 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 			http.Error(w, "no origin signature", http.StatusBadRequest)
 			return
 		}
-		if err := note.VerifySignature(noteBody, sigLines[0], originPub); err != nil {
+		if err := note.VerifySignature(noteBody, sigLines[0], originPub, originSigType); err != nil {
 			http.Error(w, fmt.Sprintf("origin signature invalid: %v", err), http.StatusForbidden)
 			return
 		}

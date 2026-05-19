@@ -19,7 +19,7 @@ package policy
 import (
 	"bufio"
 	"bytes"
-	"crypto/ed25519"
+	"crypto"
 	"fmt"
 	"os"
 	"strconv"
@@ -31,10 +31,11 @@ import (
 // Witness is a single trusted cosigner.
 type Witness struct {
 	PolicyName string           // local label in the policy file
-	SignerName string            // signer name embedded in the vkey; used to match cosig lines
+	SignerName string           // signer name embedded in the vkey; used to match cosig lines
 	Endpoint   string           // HTTP endpoint; empty for offline-only verification
-	Key        ed25519.PublicKey
-	keyHash    [4]byte // SHA-256(signerName+"\n"+0x04+pub)[:4] per tlog-cosignature
+	Key        crypto.PublicKey
+	SigType    note.SigType
+	keyHash    [4]byte // SHA-256(signerName+"\n"+typeByte+pub)[:4]
 }
 
 // Group is a named threshold set of witnesses and/or sub-groups.
@@ -64,7 +65,8 @@ func (g *Group) satisfied(witnessed map[string]bool) bool {
 // Policy is the parsed tlog-policy.
 type Policy struct {
 	LogName    string
-	LogKey     ed25519.PublicKey
+	LogKey     crypto.PublicKey
+	LogSigType note.SigType
 	logKeyHash [4]byte
 	witnesses  map[string]*Witness // keyed by PolicyName
 	// groups contains one entry per witness (implicit singleton) and per group directive.
@@ -108,16 +110,18 @@ func Load(path string) (*Policy, error) {
 			if len(fields) != 2 {
 				return nil, fmt.Errorf("log: expected 1 vkey argument")
 			}
-			name, keyType, key, err := note.ParseVKey(fields[1])
+			name, sigType, key, err := note.ParseVKey(fields[1])
 			if err != nil {
 				return nil, fmt.Errorf("log vkey: %w", err)
 			}
-			if keyType != note.Ed25519Origin {
-				return nil, fmt.Errorf("log vkey must use origin key type (0x%02x), got 0x%02x", note.Ed25519Origin, keyType)
+			// Origin keys must be Ed25519Origin (0x01) or MLDSA44 (0x06).
+			if sigType != note.Ed25519Origin && sigType != note.MLDSA44 {
+				return nil, fmt.Errorf("log vkey must use origin key type (0x01 or 0x06), got 0x%02x", sigType)
 			}
 			p.LogName = name
 			p.LogKey = key
-			p.logKeyHash = note.KeyHash(name, key)
+			p.LogSigType = sigType
+			p.logKeyHash = note.KeyHash(name, key, sigType)
 
 		case "witness":
 			// witness <name> <vkey>
@@ -139,19 +143,21 @@ func Load(path string) (*Policy, error) {
 			} else {
 				vkeyStr = fields[2]
 			}
-			signerName, keyType, key, err := note.ParseVKey(vkeyStr)
+			signerName, sigType, key, err := note.ParseVKey(vkeyStr)
 			if err != nil {
 				return nil, fmt.Errorf("witness %s vkey: %w", policyName, err)
 			}
-			if keyType != note.Ed25519Cosigner {
-				return nil, fmt.Errorf("witness %s vkey must use cosigner key type (0x%02x), got 0x%02x", policyName, note.Ed25519Cosigner, keyType)
+			// Cosigner keys must be Ed25519Cosigner (0x04) or MLDSA44 (0x06).
+			if sigType != note.Ed25519Cosigner && sigType != note.MLDSA44 {
+				return nil, fmt.Errorf("witness %s vkey must use cosigner key type (0x04 or 0x06), got 0x%02x", policyName, sigType)
 			}
 			w := &Witness{
 				PolicyName: policyName,
 				SignerName: signerName,
 				Endpoint:   endpoint,
 				Key:        key,
-				keyHash:    note.CosignKeyHash(signerName, key),
+				SigType:    sigType,
+				keyHash:    note.KeyHash(signerName, key, sigType),
 			}
 			p.witnesses[policyName] = w
 			// Each witness gets an implicit singleton group so it can be
@@ -257,7 +263,7 @@ func (p *Policy) Verify(body string, sigLines []string) error {
 		if len(raw) < 4 || !bytes.Equal(raw[:4], p.logKeyHash[:]) {
 			continue
 		}
-		if err := note.VerifySignature(body, line, p.LogKey); err != nil {
+		if err := note.VerifySignature(body, line, p.LogKey, p.LogSigType); err != nil {
 			return fmt.Errorf("log signature invalid: %w", err)
 		}
 		logFound = true
@@ -287,7 +293,7 @@ func (p *Policy) Verify(body string, sigLines []string) error {
 			if len(raw) < 4 || !bytes.Equal(raw[:4], w.keyHash[:]) {
 				continue
 			}
-			if err := note.VerifyCosignature(body, line, w.Key); err == nil {
+			if err := note.VerifyCosignature(body, line, w.Key, w.SigType, w.SignerName); err == nil {
 				witnessed[w.SignerName] = true
 			}
 			break

@@ -1,8 +1,16 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "note",
     srcs = ["note.go"],
     importpath = "github.com/BenBirt/git-ratchet/internal/note",
     visibility = ["//:__subpackages__"],
+    deps = ["@io_filippo_mldsa//:mldsa"],
+)
+
+go_test(
+    name = "note_test",
+    srcs = ["note_test.go"],
+    embed = [":note"],
+    deps = ["@io_filippo_mldsa//:mldsa"],
 )
