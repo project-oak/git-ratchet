@@ -34,7 +34,7 @@ type Witness struct {
 	SignerName string            // signer name embedded in the vkey; used to match cosig lines
 	Endpoint   string           // HTTP endpoint; empty for offline-only verification
 	Key        ed25519.PublicKey
-	keyHash    [4]byte // SHA-256(signerName+"\n"+0x01+pub)[:4]
+	keyHash    [4]byte // SHA-256(signerName+"\n"+0x04+pub)[:4] per tlog-cosignature
 }
 
 // Group is a named threshold set of witnesses and/or sub-groups.
@@ -108,9 +108,12 @@ func Load(path string) (*Policy, error) {
 			if len(fields) != 2 {
 				return nil, fmt.Errorf("log: expected 1 vkey argument")
 			}
-			name, key, err := note.ParseVKey(fields[1])
+			name, keyType, key, err := note.ParseVKey(fields[1])
 			if err != nil {
 				return nil, fmt.Errorf("log vkey: %w", err)
+			}
+			if keyType != note.Ed25519Origin {
+				return nil, fmt.Errorf("log vkey must use origin key type (0x%02x), got 0x%02x", note.Ed25519Origin, keyType)
 			}
 			p.LogName = name
 			p.LogKey = key
@@ -136,16 +139,19 @@ func Load(path string) (*Policy, error) {
 			} else {
 				vkeyStr = fields[2]
 			}
-			signerName, key, err := note.ParseVKey(vkeyStr)
+			signerName, keyType, key, err := note.ParseVKey(vkeyStr)
 			if err != nil {
 				return nil, fmt.Errorf("witness %s vkey: %w", policyName, err)
+			}
+			if keyType != note.Ed25519Cosigner {
+				return nil, fmt.Errorf("witness %s vkey must use cosigner key type (0x%02x), got 0x%02x", policyName, note.Ed25519Cosigner, keyType)
 			}
 			w := &Witness{
 				PolicyName: policyName,
 				SignerName: signerName,
 				Endpoint:   endpoint,
 				Key:        key,
-				keyHash:    note.KeyHash(signerName, key),
+				keyHash:    note.CosignKeyHash(signerName, key),
 			}
 			p.witnesses[policyName] = w
 			// Each witness gets an implicit singleton group so it can be

@@ -51,9 +51,9 @@ func getFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func mustGenerateKey(t *testing.T, name string) *note.Signer {
+func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Signer {
 	t.Helper()
-	s, err := note.GenerateKey(name)
+	s, err := note.GenerateKey(name, keyType)
 	if err != nil {
 		t.Fatalf("generating key %s: %v", name, err)
 	}
@@ -126,8 +126,8 @@ func readBody(t *testing.T, resp *http.Response) string {
 func setupServer(t *testing.T) (baseURL string, originKey, witnessKey *note.Signer, stop func()) {
 	t.Helper()
 	bin := mustFindWitnessBinary(t)
-	originKey = mustGenerateKey(t, "test-origin")
-	witnessKey = mustGenerateKey(t, "test-witness")
+	originKey = mustGenerateKey(t, "test-origin", note.Ed25519Origin)
+	witnessKey = mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
 
 	tmpDir := t.TempDir()
 	witnessKeyPath := filepath.Join(tmpDir, "witness.key")
@@ -164,7 +164,7 @@ func TestAddCheckpointFirstSubmission(t *testing.T) {
 		t.Errorf("expected cosignature line, got: %q", body)
 	}
 
-	_, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
+	_, _, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
 	noteBody := "example.com/repo refs/heads/main\n" + commit + "\n"
 	if err := note.VerifyCosignature(noteBody, body, witnessPub); err != nil {
 		t.Errorf("cosignature verification failed: %v", err)
@@ -191,7 +191,7 @@ func TestAddCheckpointFirstSubmissionSHA256(t *testing.T) {
 		t.Errorf("expected cosignature line, got: %q", body)
 	}
 
-	_, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
+	_, _, witnessPub, _ := note.ParseVKey(witnessKey.VKey())
 	noteBody := "example.com/repo refs/heads/main\n" + commit + "\n"
 	if err := note.VerifyCosignature(noteBody, body, witnessPub); err != nil {
 		t.Errorf("cosignature verification failed: %v", err)
@@ -267,7 +267,7 @@ func TestAddCheckpointInvalidSignature(t *testing.T) {
 	defer stop()
 
 	// Sign with a key the server doesn't know about.
-	rogue := mustGenerateKey(t, "rogue-origin")
+	rogue := mustGenerateKey(t, "rogue-origin", note.Ed25519Origin)
 	commit := strings.Repeat("c", 40)
 	signed := makeSignedCheckpoint(t, rogue, "example.com/repo", "refs/heads/main", commit)
 	payload := "\n" + signed

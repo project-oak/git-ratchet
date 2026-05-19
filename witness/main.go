@@ -43,7 +43,7 @@ func main() {
 	}
 
 	// Read witness signer key.
-	wSigner, err := note.ReadKeyFile(*keyPath)
+	wSigner, err := note.ReadKeyFile(*keyPath, note.Ed25519Cosigner)
 	if err != nil {
 		log.Fatalf("failed to read witness key: %v", err)
 	}
@@ -332,7 +332,7 @@ func parseOrigins(origins []string) (map[string]ed25519.PublicKey, error) {
 		if vkey == "" {
 			continue
 		}
-		name, pub, err := note.ParseVKey(vkey)
+		name, _, pub, err := note.ParseVKey(vkey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse trusted origin vkey %q: %w", vkey, err)
 		}

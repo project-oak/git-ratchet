@@ -90,7 +90,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	ref, kind := resolveRef(c.branch, c.tag)
 
 	// Load the origin signing key.
-	signer, err := note.ReadKeyFile(c.keyPath)
+	signer, err := note.ReadKeyFile(c.keyPath, note.Ed25519Origin)
 	if err != nil {
 		fatalf("loading key: %v", err)
 	}

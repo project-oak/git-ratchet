@@ -24,8 +24,8 @@ func TestIntegration(t *testing.T) {
 	gitRatchetBin := mustFindBinary(t)
 	witnessBin := mustFindWitnessBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin")
-	witnessKey := mustGenerateKey(t, "test-witness")
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash1 := makeCommit(t, repoDir, "initial commit")
@@ -118,8 +118,8 @@ func TestTagIntegration(t *testing.T) {
 	gitRatchetBin := mustFindBinary(t)
 	witnessBin := mustFindWitnessBinary(t)
 
-	originKey := mustGenerateKey(t, "test-origin")
-	witnessKey := mustGenerateKey(t, "test-witness")
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "tagged release")
@@ -289,9 +289,9 @@ func mustFindWitnessBinary(t *testing.T) string {
 	return ""
 }
 
-func mustGenerateKey(t *testing.T, name string) *note.Signer {
+func mustGenerateKey(t *testing.T, name string, keyType note.KeyType) *note.Signer {
 	t.Helper()
-	s, err := note.GenerateKey(name)
+	s, err := note.GenerateKey(name, keyType)
 	if err != nil {
 		t.Fatalf("generating key %s: %v", name, err)
 	}
