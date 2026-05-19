@@ -161,21 +161,35 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed checkpoint body", http.StatusBadRequest)
 		return
 	}
-	branchParts := strings.Fields(bodyLines[0])
-	if len(branchParts) != 2 {
-		http.Error(w, "malformed branch line in checkpoint body", http.StatusBadRequest)
+	refParts := strings.Fields(bodyLines[0])
+	if len(refParts) != 2 {
+		http.Error(w, "malformed ref line in checkpoint body", http.StatusBadRequest)
 		return
 	}
-	branchKey := branchParts[0] + " " + branchParts[1]
+	ref := refParts[1]
+	stateKey := refParts[0] + " " + ref
 	newCommit := strings.TrimSpace(bodyLines[1])
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	storedCommit := s.commits[branchKey]
+	storedCommit := s.commits[stateKey]
 
 	if storedCommit != "" && newCommit != storedCommit {
-		// Ancestry verification required.
+		refKind, err := gitutil.ParseRefKind(ref)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("unrecognised ref: %v", err), http.StatusBadRequest)
+			return
+		}
+		if refKind == gitutil.RefTag {
+			// Tag pinning: refuse any change to the stored commit.
+			http.Error(w, fmt.Sprintf(
+				"tag checkpoint rejected: stored commit %s differs from submitted commit %s; tags are immutable",
+				storedCommit, newCommit), http.StatusConflict)
+			return
+		}
+
+		// Branch ratchet: ancestry verification required.
 		commitMap := make(map[string]string)
 		for _, b64Obj := range ancestry {
 			decoded, err := base64.StdEncoding.DecodeString(b64Obj)
@@ -232,7 +246,7 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Update stored state if it's empty, or if verification succeeded and newCommit != storedCommit.
 	if storedCommit != newCommit {
-		s.commits[branchKey] = newCommit
+		s.commits[stateKey] = newCommit
 		if err := s.saveState(); err != nil {
 			log.Printf("error saving state file: %v", err)
 			http.Error(w, "internal server error: saving state failed", http.StatusInternalServerError)

@@ -27,9 +27,17 @@ func RemoteURL(repoDir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// checkpointRef converts a source ref like "refs/heads/main" or
+// "refs/tags/v1.0" to its checkpoint storage ref, e.g.
+// "refs/checkpoints/heads/main" or "refs/checkpoints/tags/v1.0".
+func checkpointRef(sourceRef string) string {
+	return "refs/checkpoints/" + strings.TrimPrefix(sourceRef, "refs/")
+}
+
 // StoreCheckpoint writes a checkpoint string as a Git blob and points
-// refs/checkpoints/<branch> at it.
-func StoreCheckpoint(repoDir, branch, checkpoint string) error {
+// the corresponding checkpoint ref at it.
+// ref must be a full ref path, e.g. "refs/heads/main" or "refs/tags/v1.0".
+func StoreCheckpoint(repoDir, ref, checkpoint string) error {
 	cmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
 	cmd.Stdin = strings.NewReader(checkpoint)
 	out, err := cmd.Output()
@@ -38,17 +46,17 @@ func StoreCheckpoint(repoDir, branch, checkpoint string) error {
 	}
 	blobHash := strings.TrimSpace(string(out))
 
-	ref := "refs/checkpoints/" + branch
-	if _, err := git(repoDir, "update-ref", ref, blobHash); err != nil {
-		return fmt.Errorf("updating ref %s: %w", ref, err)
+	cpRef := checkpointRef(ref)
+	if _, err := git(repoDir, "update-ref", cpRef, blobHash); err != nil {
+		return fmt.Errorf("updating ref %s: %w", cpRef, err)
 	}
 	return nil
 }
 
-// ReadCheckpoint reads the checkpoint blob for a branch.
-func ReadCheckpoint(repoDir, branch string) (string, error) {
-	ref := "refs/checkpoints/" + branch
-	return git(repoDir, "cat-file", "-p", ref)
+// ReadCheckpoint reads the checkpoint blob for a ref.
+// ref must be a full ref path, e.g. "refs/heads/main" or "refs/tags/v1.0".
+func ReadCheckpoint(repoDir, ref string) (string, error) {
+	return git(repoDir, "cat-file", "-p", checkpointRef(ref))
 }
 
 func git(repoDir string, args ...string) (string, error) {

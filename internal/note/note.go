@@ -2,10 +2,12 @@
 //
 // A checkpoint is a signed note with the body:
 //
-//	<origin> refs/heads/<branch>
+//	<origin> <ref>
 //	<commit-hash>
 //
-// Signed with an Ed25519 origin key, and optionally cosigned by witnesses.
+// where <ref> is a full Git reference such as refs/heads/<branch> or
+// refs/tags/<tag>. Signed with an Ed25519 origin key, and optionally
+// cosigned by witnesses.
 // See https://c2sp.org/signed-note for the wire format.
 package note
 

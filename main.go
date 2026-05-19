@@ -15,14 +15,14 @@ import (
 	"github.com/BenBirt/git-ratchet/internal/witness"
 )
 
-const usageText = `git-ratchet: rollback-resistant Git branch checkpointing
+const usageText = `git-ratchet: rollback-resistant Git ref checkpointing
 
 Usage:
   git-ratchet <command> [flags]
 
 Commands:
-  checkpoint    Create a witnessed checkpoint for a branch
-  verify        Verify a branch checkpoint against a witness policy
+  checkpoint    Create a witnessed checkpoint for a branch or tag
+  verify        Verify a ref checkpoint against a witness policy
 
 Use "git-ratchet <command> --help" for more information about a command.
 `
@@ -47,14 +47,34 @@ func main() {
 	}
 }
 
+// resolveRef parses the --branch and --tag flags and returns the full ref
+// path and its kind. It exits with an error if both or neither flag is set.
+func resolveRef(branch, tag string) (ref string, kind gitutil.RefKind) {
+	if (branch == "" && tag == "") || (branch != "" && tag != "") {
+		fmt.Fprintln(os.Stderr, "error: exactly one of --branch or --tag is required")
+		os.Exit(1)
+	}
+	if tag != "" {
+		return "refs/tags/" + tag, gitutil.RefTag
+	}
+	return "refs/heads/" + branch, gitutil.RefBranch
+}
+
 func cmdCheckpoint(args []string) {
 	fs := flag.NewFlagSet("checkpoint", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Create a witnessed checkpoint for a branch.
+		fmt.Fprint(os.Stderr, `Create a witnessed checkpoint for a branch or tag.
 
-Signs a checkpoint for the branch HEAD, submits it to the witnesses
-in the policy file, collects cosignatures, and stores the cosigned
-checkpoint as a Git ref (refs/checkpoints/<branch>).
+Signs a checkpoint for the ref, submits it to the witnesses in the policy
+file, collects cosignatures, and stores the cosigned checkpoint as a Git
+ref (refs/checkpoints/heads/<branch> or refs/checkpoints/tags/<tag>).
+
+For branches, witnesses enforce a forward-only ratchet: the new commit
+must be a descendant of the previously witnessed commit.
+
+For tags, witnesses enforce immutability: the tag is pinned to the first
+commit it is witnessed at, and any subsequent checkpoint with a different
+commit is rejected.
 
 Usage:
   git-ratchet checkpoint [flags]
@@ -64,8 +84,9 @@ Flags:
 		fs.PrintDefaults()
 	}
 
-	branch := fs.String("branch", "", "Branch to checkpoint (required)")
-	commit := fs.String("commit", "", "Commit hash (default: resolve from branch HEAD)")
+	branch := fs.String("branch", "", "Branch to checkpoint (mutually exclusive with --tag)")
+	tag := fs.String("tag", "", "Tag to checkpoint (mutually exclusive with --branch)")
+	commit := fs.String("commit", "", "Commit hash (default: resolve from ref)")
 	policyPath := fs.String("policy", "", "Path to witness policy file (required)")
 	keyPath := fs.String("key", "", "Path to origin private key file (required)")
 	repoDir := fs.String("repo", ".", "Path to git repository")
@@ -74,11 +95,13 @@ Flags:
 		os.Exit(1)
 	}
 
-	if *branch == "" || *policyPath == "" || *keyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --branch, --policy, and --key are required")
+	if *policyPath == "" || *keyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --policy and --key are required")
 		fs.Usage()
 		os.Exit(1)
 	}
+
+	ref, kind := resolveRef(*branch, *tag)
 
 	// Load the origin signing key.
 	signer, err := note.ReadKeyFile(*keyPath)
@@ -94,15 +117,14 @@ Flags:
 
 	// Resolve commit hash if not specified.
 	if *commit == "" {
-		ref := "refs/heads/" + *branch
 		*commit, err = gitutil.ResolveRef(*repoDir, ref)
 		if err != nil {
-			fatalf("resolving branch HEAD: %v", err)
+			fatalf("resolving ref: %v", err)
 		}
 	}
 
 	// Build the checkpoint body using the log name from the policy.
-	body := pol.LogName + " refs/heads/" + *branch + "\n" + *commit + "\n"
+	body := pol.LogName + " " + ref + "\n" + *commit + "\n"
 
 	// Sign the checkpoint.
 	signed, err := note.Sign(body, signer)
@@ -110,17 +132,19 @@ Flags:
 		fatalf("signing checkpoint: %v", err)
 	}
 
-	// Retrieve previous checkpoint and build ancestry proof.
+	// Build ancestry proof (branches only; tags don't need one).
 	var ancestry []string
-	if oldCheckpoint, err := gitutil.ReadCheckpoint(*repoDir, *branch); err == nil {
-		oldBody, err := note.ExtractBody(oldCheckpoint)
-		if err == nil {
-			lines := strings.Split(strings.TrimSpace(oldBody), "\n")
-			if len(lines) >= 2 {
-				oldCommit := strings.TrimSpace(lines[1])
-				ancestry, err = gitutil.GetCommitChain(*repoDir, oldCommit, *commit)
-				if err != nil {
-					fatalf("failed to generate ancestry proof: %v", err)
+	if kind == gitutil.RefBranch {
+		if oldCheckpoint, err := gitutil.ReadCheckpoint(*repoDir, ref); err == nil {
+			oldBody, err := note.ExtractBody(oldCheckpoint)
+			if err == nil {
+				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
+				if len(lines) >= 2 {
+					oldCommit := strings.TrimSpace(lines[1])
+					ancestry, err = gitutil.GetCommitChain(*repoDir, oldCommit, *commit)
+					if err != nil {
+						fatalf("failed to generate ancestry proof: %v", err)
+					}
 				}
 			}
 		}
@@ -165,22 +189,25 @@ Flags:
 	}
 
 	// Store the checkpoint as a git ref.
-	if err := gitutil.StoreCheckpoint(*repoDir, *branch, signed); err != nil {
+	if err := gitutil.StoreCheckpoint(*repoDir, ref, signed); err != nil {
 		fatalf("storing checkpoint: %v", err)
 	}
 
-	fmt.Printf("checkpoint stored at refs/checkpoints/%s (%d witness cosignatures)\n", *branch, cosigned)
+	cpRef := "refs/checkpoints/" + strings.TrimPrefix(ref, "refs/")
+	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, cosigned)
 }
 
 func cmdVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Verify a branch checkpoint against a witness policy.
+		fmt.Fprint(os.Stderr, `Verify a ref checkpoint against a witness policy.
 
-Fetches the checkpoint ref for the specified branch, verifies the
-origin signature and witness cosignatures against the policy, and
-confirms the current branch tip has not moved ahead of the
-checkpointed commit.
+Fetches the checkpoint ref, verifies the origin signature and witness
+cosignatures against the policy, and confirms the current ref still
+matches the checkpointed commit.
+
+For branches, the local HEAD must not be ahead of the checkpointed commit.
+For tags, the tag must still point to the exact checkpointed commit.
 
 Usage:
   git-ratchet verify [flags]
@@ -190,20 +217,23 @@ Flags:
 		fs.PrintDefaults()
 	}
 
-	branch := fs.String("branch", "", "Branch to verify (required)")
+	branch := fs.String("branch", "", "Branch to verify (mutually exclusive with --tag)")
+	tag := fs.String("tag", "", "Tag to verify (mutually exclusive with --branch)")
 	policyPath := fs.String("policy", "", "Path to witness policy file (required)")
 	repoDir := fs.String("repo", ".", "Path to git repository")
-	commit := fs.String("commit", "", "Commit hash to check against checkpoint (default: resolve from branch HEAD)")
+	commit := fs.String("commit", "", "Commit hash to check against checkpoint (default: resolve from ref)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 
-	if *branch == "" || *policyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --branch and --policy are required")
+	if *policyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --policy is required")
 		fs.Usage()
 		os.Exit(1)
 	}
+
+	ref, kind := resolveRef(*branch, *tag)
 
 	// Load the policy.
 	pol, err := policy.Load(*policyPath)
@@ -212,11 +242,12 @@ Flags:
 	}
 
 	// Read the stored checkpoint.
-	checkpoint, err := gitutil.ReadCheckpoint(*repoDir, *branch)
+	checkpoint, err := gitutil.ReadCheckpoint(*repoDir, ref)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: no checkpoint found for branch %q\n", *branch)
+		cpRef := "refs/checkpoints/" + strings.TrimPrefix(ref, "refs/")
+		fmt.Fprintf(os.Stderr, "error: no checkpoint found for ref %q\n", ref)
 		fmt.Fprintf(os.Stderr, "hint: if this repo was cloned, fetch the checkpoint ref with:\n")
-		fmt.Fprintf(os.Stderr, "  git fetch origin refs/checkpoints/%s:refs/checkpoints/%s\n", *branch, *branch)
+		fmt.Fprintf(os.Stderr, "  git fetch origin %s:%s\n", cpRef, cpRef)
 		os.Exit(1)
 	}
 
@@ -238,32 +269,42 @@ Flags:
 	}
 	checkpointedCommit := strings.TrimSpace(bodyLines[1])
 
-	// Determine the commit to check: explicit --commit or branch HEAD.
+	// Determine the commit to check: explicit --commit or resolve from ref.
 	var localCommit string
 	if *commit != "" {
 		localCommit = *commit
 	} else {
-		ref := "refs/heads/" + *branch
 		localCommit, err = gitutil.ResolveRef(*repoDir, ref)
 		if err != nil {
-			fatalf("resolving branch HEAD: %v", err)
+			fatalf("resolving ref: %v", err)
 		}
 	}
 
-	// localCommit must be an ancestor-or-equal of the checkpointed commit.
-	// If it is ahead of the checkpoint, those commits are unwitnessed and
-	// could be silently removed — exactly the attack the ratchet guards against.
-	ok, err := gitutil.IsAncestor(*repoDir, localCommit, checkpointedCommit)
-	if err != nil {
-		fatalf("checking ancestry: %v", err)
-	}
-	if !ok {
-		fmt.Fprintf(os.Stderr, "error: local commit is ahead of the last witnessed checkpoint\n")
-		fmt.Fprintf(os.Stderr, "  local commit:         %s\n", localCommit)
-		fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
-		fmt.Fprintf(os.Stderr, "Commits after the checkpoint have not been witnessed and could be\n")
-		fmt.Fprintf(os.Stderr, "silently removed. Run \"git-ratchet checkpoint\" to extend the ratchet.\n")
-		os.Exit(1)
+	if kind == gitutil.RefTag {
+		// Tag pinning: current commit must exactly match checkpoint.
+		if localCommit != checkpointedCommit {
+			fmt.Fprintf(os.Stderr, "error: tag does not match checkpoint\n")
+			fmt.Fprintf(os.Stderr, "  current commit:       %s\n", localCommit)
+			fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
+			fmt.Fprintf(os.Stderr, "The tag has been moved since it was witnessed.\n")
+			os.Exit(1)
+		}
+	} else {
+		// Branch ratchet: local commit must be ancestor-or-equal of the
+		// checkpointed commit. If it is ahead, those commits are
+		// unwitnessed and could be silently removed.
+		ok, err := gitutil.IsAncestor(*repoDir, localCommit, checkpointedCommit)
+		if err != nil {
+			fatalf("checking ancestry: %v", err)
+		}
+		if !ok {
+			fmt.Fprintf(os.Stderr, "error: local commit is ahead of the last witnessed checkpoint\n")
+			fmt.Fprintf(os.Stderr, "  local commit:         %s\n", localCommit)
+			fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
+			fmt.Fprintf(os.Stderr, "Commits after the checkpoint have not been witnessed and could be\n")
+			fmt.Fprintf(os.Stderr, "silently removed. Run \"git-ratchet checkpoint\" to extend the ratchet.\n")
+			os.Exit(1)
+		}
 	}
 
 	fmt.Printf("verified: %s @ %s (%d cosignatures)\n",

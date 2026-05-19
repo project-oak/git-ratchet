@@ -89,7 +89,7 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// 4. Tamper with the checkpoint blob — verify should reject it.
-	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/heads/main").Output()
 	if err != nil {
 		t.Fatalf("reading checkpoint ref: %v", err)
 	}
@@ -105,12 +105,106 @@ func TestIntegration(t *testing.T) {
 	}
 	blobHash := strings.TrimSpace(string(blobOut))
 	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
-		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		"refs/checkpoints/heads/main", blobHash).CombinedOutput(); err != nil {
 		t.Fatalf("updating ref to tampered blob: %v\n%s", err, out)
 	}
 	if err := runVerify(t, gitRatchetBin, repoDir, policyPath3); err == nil {
 		t.Error("verify should fail after tampering with the checkpoint blob")
 	}
+}
+
+// TestTagIntegration tests the tag checkpointing and immutability workflow.
+func TestTagIntegration(t *testing.T) {
+	gitRatchetBin := mustFindBinary(t)
+	witnessBin := mustFindWitnessBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	tmpDir := t.TempDir()
+	witnessKeyPath := filepath.Join(tmpDir, "witness.key")
+	mustWriteKey(t, witnessKeyPath, witnessKey)
+
+	originsPath := filepath.Join(tmpDir, "origins.txt")
+	if err := os.WriteFile(originsPath, []byte(originKey.VKey()+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(tmpDir, "state.json")
+	port := getFreePort(t)
+	witnessURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	stopWitness := startWitnessServer(t, witnessBin, port, witnessKeyPath, originsPath, statePath)
+	defer stopWitness()
+
+	clientKeyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL)
+
+	// 1. Checkpoint the tag.
+	out, err := exec.Command(gitRatchetBin,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--commit", commitHash,
+		"--repo", repoDir,
+		"--key", clientKeyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tag checkpoint failed: %v\n%s", err, out)
+	}
+	t.Logf("tag checkpoint: %s", out)
+
+	// 2. Verify the tag checkpoint.
+	out, err = exec.Command(gitRatchetBin,
+		"verify",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tag verify failed: %v\n%s", err, out)
+	}
+	t.Logf("tag verify: %s", out)
+
+	// 3. Confirm checkpoint ref is at the right path.
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/tags/v1.0.0").Output()
+	if err != nil {
+		t.Fatalf("checkpoint ref not found at refs/checkpoints/tags/v1.0.0: %v", err)
+	}
+	if !strings.Contains(string(refOut), commitHash) {
+		t.Errorf("checkpoint body should contain commit %s", commitHash)
+	}
+
+	// 4. Move the tag — verify should fail.
+	_ = makeCommit(t, repoDir, "new commit")
+	run(t, repoDir, "git", "tag", "-f", "v1.0.0")
+
+	out, err = exec.Command(gitRatchetBin,
+		"verify",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatal("verify should fail after tag was moved")
+	}
+	t.Logf("verify after tag move (expected failure): %s", out)
+
+	// 5. Second checkpoint for the moved tag — witness should reject with 409.
+	out, err = exec.Command(gitRatchetBin,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--key", clientKeyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatal("second checkpoint should fail for moved tag")
+	}
+	t.Logf("second tag checkpoint (expected failure): %s", out)
 }
 
 // runVerify invokes git-ratchet verify and returns any error (nil = exit 0).
@@ -147,10 +241,10 @@ func runCheckpoint(t *testing.T, binary, repoDir, keyPath, policyPath, commit st
 	}
 }
 
-// readCheckpointRef reads the refs/checkpoints/main blob and returns its content.
+// readCheckpointRef reads the refs/checkpoints/heads/main blob and returns its content.
 func readCheckpointRef(t *testing.T, repoDir string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	out, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/heads/main").Output()
 	if err != nil {
 		t.Fatalf("reading checkpoint ref: %v", err)
 	}

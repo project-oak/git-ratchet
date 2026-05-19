@@ -51,7 +51,7 @@ func TestCheckpointBasic(t *testing.T) {
 	}
 	t.Logf("checkpoint output: %s", out)
 
-	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/heads/main").Output()
 	if err != nil {
 		t.Fatalf("checkpoint ref not found: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 		t.Fatalf("second checkpoint failed: %v\n%s", err, out)
 	}
 
-	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/heads/main").Output()
 	if err != nil {
 		t.Fatalf("checkpoint ref not found: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestVerifyTamperedNote(t *testing.T) {
 	}
 
 	// Read the checkpoint and corrupt bytes near the end of the signature blob.
-	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/main").Output()
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/heads/main").Output()
 	if err != nil {
 		t.Fatalf("reading checkpoint ref: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestVerifyTamperedNote(t *testing.T) {
 	}
 	blobHash := strings.TrimSpace(string(blobOut))
 	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
-		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		"refs/checkpoints/heads/main", blobHash).CombinedOutput(); err != nil {
 		t.Fatalf("updating ref: %v\n%s", err, out)
 	}
 
@@ -385,7 +385,7 @@ func TestVerifyInsufficientCosigs(t *testing.T) {
 	}
 	blobHash := strings.TrimSpace(string(blobOut))
 	if out, err := exec.Command("git", "-C", repoDir, "update-ref",
-		"refs/checkpoints/main", blobHash).CombinedOutput(); err != nil {
+		"refs/checkpoints/heads/main", blobHash).CombinedOutput(); err != nil {
 		t.Fatalf("updating ref: %v\n%s", err, out)
 	}
 
@@ -401,6 +401,190 @@ func TestVerifyInsufficientCosigs(t *testing.T) {
 	if !strings.Contains(string(out), "insufficient cosignatures") {
 		t.Errorf("expected 'insufficient cosignatures' in error output, got:\n%s", out)
 	}
+}
+
+// TestTagCheckpointBasic creates a git repo with a tag, checkpoints it,
+// and verifies the checkpoint ref exists at refs/checkpoints/tags/<name>.
+func TestTagCheckpointBasic(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git-ratchet checkpoint --tag failed: %v\n%s", err, out)
+	}
+	t.Logf("checkpoint output: %s", out)
+
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/tags/v1.0.0").Output()
+	if err != nil {
+		t.Fatalf("checkpoint ref not found at refs/checkpoints/tags/v1.0.0: %v", err)
+	}
+	checkpoint := string(refOut)
+
+	body, sigLines, err := note.ParseSignedNote(checkpoint)
+	if err != nil {
+		t.Fatalf("parsing checkpoint: %v", err)
+	}
+
+	expectedBody := originKey.Name + " refs/tags/v1.0.0\n" + commitHash + "\n"
+	if body != expectedBody {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", body, expectedBody)
+	}
+
+	if len(sigLines) != 2 {
+		t.Fatalf("expected 2 signature lines, got %d: %v", len(sigLines), sigLines)
+	}
+}
+
+// TestTagVerifyBasic checkpoints a tag and then verifies it.
+func TestTagVerifyBasic(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	commitHash := makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--commit", commitHash,
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify failed: %v\n%s", err, out)
+	}
+	t.Logf("verify output: %s", out)
+}
+
+// TestTagVerifyMoved checkpoints a tag, moves it to a different commit,
+// and verifies that verify detects the tag has been moved.
+func TestTagVerifyMoved(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	// Move the tag to a different commit.
+	_ = makeCommit(t, repoDir, "new commit")
+	run(t, repoDir, "git", "tag", "-f", "v1.0.0")
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail when tag has been moved, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "tag does not match checkpoint") {
+		t.Errorf("expected 'tag does not match checkpoint' in error output, got:\n%s", out)
+	}
+}
+
+// TestTagCheckpointImmutability checkpoints a tag, moves it, and verifies
+// that the witness rejects a second checkpoint for the moved tag.
+func TestTagCheckpointImmutability(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin")
+	witnessKey := mustGenerateKey(t, "test-witness")
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	// First checkpoint — should succeed.
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("first checkpoint failed: %v\n%s", err, out)
+	}
+
+	// Move the tag to a different commit.
+	_ = makeCommit(t, repoDir, "different commit")
+	run(t, repoDir, "git", "tag", "-f", "v1.0.0")
+
+	// Second checkpoint — should fail because witness rejects immutability violation.
+	out, err = exec.Command(binary,
+		"checkpoint",
+		"--tag", "v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected second checkpoint to fail after tag was moved, but it succeeded:\n%s", out)
+	}
+	t.Logf("second checkpoint error (expected): %s", out)
 }
 
 func mustFindBinary(t *testing.T) string {
@@ -591,6 +775,11 @@ func newFakeWitness(t *testing.T, witnessKey *note.Signer, originKey *note.Signe
 		fw.mu.Unlock()
 
 		if storedCommit != "" && newCommit != storedCommit {
+			// Check if this is a tag ref — tags are immutable.
+			if strings.HasPrefix(branchParts[1], "refs/tags/") {
+				http.Error(w, "tag checkpoint rejected: tags are immutable", http.StatusConflict)
+				return
+			}
 			commitMap := make(map[string]string)
 			for _, b64Obj := range ancestry {
 				decoded, err := base64.StdEncoding.DecodeString(b64Obj)

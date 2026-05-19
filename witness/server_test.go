@@ -305,6 +305,32 @@ func TestAddCheckpointDisconnectedAncestry(t *testing.T) {
 	}
 }
 
+// TestAddCheckpointTagImmutability verifies that the witness rejects a second
+// checkpoint for an already-pinned tag when the commit hash differs, returning
+// 409 Conflict.
+func TestAddCheckpointTagImmutability(t *testing.T) {
+	baseURL, originKey, _, stop := setupServer(t)
+	defer stop()
+
+	commit1 := strings.Repeat("a", 40)
+	signed1 := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/tags/v1.0.0", commit1)
+	resp1 := post(t, baseURL, "\n"+signed1)
+	readBody(t, resp1)
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first tag checkpoint: expected 200, got %d", resp1.StatusCode)
+	}
+
+	// Attempt to checkpoint the same tag with a different commit.
+	commit2 := strings.Repeat("b", 40)
+	signed2 := makeSignedCheckpoint(t, originKey, "example.com/repo", "refs/tags/v1.0.0", commit2)
+	resp2 := post(t, baseURL, "\n"+signed2)
+	body2 := readBody(t, resp2)
+
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409 for moved tag, got %d: %s", resp2.StatusCode, body2)
+	}
+}
+
 // makeTestCommitObject builds a minimal, correctly-SHA1-hashed git commit
 // object suitable for use in ancestry proof payloads. parentHash may be empty
 // for a root commit. Returns the commit ID (hex SHA-1) and the wire-format

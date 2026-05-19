@@ -1,6 +1,6 @@
 # Git Checkpoint Witness Protocol
 
-This document describes a synchronous HTTP-based protocol to obtain [cosignatures][] from Git branch checkpoint witnesses.
+This document describes a synchronous HTTP-based protocol to obtain [cosignatures][] from Git ref checkpoint witnesses.
 
 [cosignatures]: https://c2sp.org/tlog-cosignature
 [checkpoint]: ../README.md#checkpoint-format
@@ -21,11 +21,20 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## Introduction
 
-This protocol allows clients (typically Git repositories or deployment pipelines) to obtain cosignatures from witnesses, ensuring that branch references move strictly forward. When creating a new checkpoint for a branch, the client reaches out to witnesses to request cosignatures, providing a cryptographic ancestry proof. Witnesses verify that the checkpoint is a direct descendant of their previously recorded state for that branch, and return a timestamped cosignature.
+This protocol allows clients (typically Git repositories or deployment pipelines) to obtain cosignatures from witnesses, ensuring that branch references move strictly forward and that tag references remain immutable. When creating a new checkpoint for a ref, the client reaches out to witnesses to request cosignatures, providing a cryptographic ancestry proof (for branches). Witnesses verify the checkpoint against their previously recorded state for that ref, and return a timestamped cosignature.
 
-A witness is an entity exposing an HTTP service identified by a name and a public key. Each witness is configured with a list of supported origin public keys. For each unique repository branch (identified by the `origin` and `ref` in the checkpoint), the witness stores and tracks the latest commit hash it has cosigned.
+A witness is an entity exposing an HTTP service identified by a name and a public key. Each witness is configured with a list of supported origin public keys. For each unique repository ref (identified by the `origin` and `ref` in the checkpoint), the witness stores and tracks the latest commit hash it has cosigned.
 
 Only authorized clients (e.g., origin repository administrators or CI systems) are expected to communicate directly with the witnesses. There is no authentication of requests beyond the validation of the signature on the checkpoint itself.
+
+## Ref-Type Semantics
+
+The witness derives its verification rules from the ref namespace in the checkpoint body:
+
+- **`refs/heads/*`** (branches): Forward-only ratchet. The new commit must be a descendant of the previously stored commit. An ancestry proof (commit chain) is required.
+- **`refs/tags/*`** (tags): Immutable pin. Once a tag is witnessed at a specific commit, it is pinned there permanently. Any attempt to checkpoint the same tag with a different commit is rejected. No ancestry proof is needed.
+
+This convention-based approach means the witness does not need an external policy to determine what rules to apply — the ref path in the signed checkpoint body is sufficient.
 
 ## Relationship and Differences from Merkle Tree Log Witnesses
 
@@ -36,9 +45,11 @@ The Git Checkpoint Witness Protocol is designed to be conceptually equivalent to
 Both protocols enforce that the target state moves strictly forward without requiring the witness to store a copy of the log's tree or the Git repository:
 
 * **Log Witnesses:** Use **Merkle Consistency Proofs** (a list of cryptographic hashes) to verify that a previous log size $M$ is a prefix of a new log size $N$.
-* **Git Witnesses:** Use **Git Commit Chains** (a list of raw Git commit objects) to verify that a previous commit $C$ is an ancestor of a new commit $E$.
+* **Git Witnesses (branches):** Use **Git Commit Chains** (a list of raw Git commit objects) to verify that a previous commit $C$ is an ancestor of a new commit $E$.
 
 In both cases, the witness can verify the entire append-only state transition completely offline and statelessly by hashing the provided proof objects.
+
+Git tag witnessing introduces a simpler invariant — **equality** — that has no direct analog in Merkle log witnessing, since logs can only grow. It is most closely analogous to the C2SP `tlog-witness` check that the root hash must match when old size equals new size.
 
 ### Operational Differences
 
@@ -54,7 +65,7 @@ A witness is defined by a name, a public key, and by a submission prefix URL.
 
 ### add-checkpoint
 
-The `add-checkpoint` call is used to submit a new Git branch checkpoint to the witness, along with an ancestry proof showing that the new commit descends from the previously cosigned commit tip.
+The `add-checkpoint` call is used to submit a new Git ref checkpoint to the witness, along with an ancestry proof (for branches) showing that the new commit descends from the previously cosigned commit tip.
 
     POST <submission prefix>/add-checkpoint
 
@@ -65,11 +76,13 @@ The request body MUST be a sequence of:
 * An empty line,
 * The raw [checkpoint][] signed note.
 
-Each ancestry proof line MUST encode a raw Git commit object in base64, terminating in a newline character (U+000A). The set of commit objects provided MUST represent a valid chain of parent-child relationships linking the commit in the checkpoint back to the witness's previously stored commit hash.
+For branch checkpoints (`refs/heads/*`), the ancestry proof lines MUST encode a valid chain of parent-child relationships linking the commit in the checkpoint back to the witness's previously stored commit hash. For tag checkpoints (`refs/tags/*`), the ancestry proof section MUST be empty (zero proof lines before the empty separator).
+
+Each ancestry proof line MUST encode a raw Git commit object in base64, terminating in a newline character (U+000A).
 
 For merge commits, the client only needs to include commit objects representing the path from the new tip back to the old commit.
 
-Example request body:
+Example branch checkpoint request body:
 
 ```text
 Y29tbWl0IDIyNAp0cmVlIDZhY2Qz...
@@ -81,25 +94,38 @@ example.com/repo refs/heads/main
 — example-origin+a1b2c3d4 qS3fPj...
 ```
 
+Example tag checkpoint request body:
+
+```text
+
+example.com/repo refs/tags/v1.2.3
+8db5a2d0eb50ebc5c6439e6a0ae296d11f99c857
+
+— example-origin+a1b2c3d4 qS3fPj...
+```
+
 ## Witness Verification Logic
 
 Upon receiving a `POST /add-checkpoint` request, the witness MUST perform the following checks:
 
-1. **Checkpoint Parsing:** Parse the signed note checkpoint. Verify that the format is valid and matches the `origin refs/heads/<branch>\n<commit-hash>` template.
+1. **Checkpoint Parsing:** Parse the signed note checkpoint. Verify that the format is valid and matches the `origin <ref>\n<commit-hash>` template.
 2. **Signature Verification:** Check the origin signature against the configured trusted origin public key for the given `origin` identifier. If the signature is invalid, return `403 Forbidden`.
-3. **Repository State Lookup:** Look up the stored commit hash for the repository branch (`<origin>/<ref>`).
-4. **Consistency / Ancestry Verification:**
-   * If the new commit in the checkpoint matches the witness's stored commit, return `200 OK` along with the existing/new cosignature.
-   * If the stored commit is empty (uninitialized branch):
-     * The witness accepts the new commit directly, updates its stored state, and returns `200 OK` with the cosignature. (No commit chain is required or verified for initializations).
+3. **Repository State Lookup:** Look up the stored commit hash for the ref (`<origin>/<ref>`).
+4. **Ref-Type-Specific Verification:**
+   * If the new commit in the checkpoint matches the witness's stored commit, return `200 OK` along with the cosignature.
+   * If the stored commit is empty (uninitialized ref):
+     * The witness accepts the new commit directly, updates its stored state, and returns `200 OK` with the cosignature. (No ancestry proof is required for initializations).
    * If the stored commit is present and differs from the new checkpoint commit:
-     * **Decoded Object Validation:**
-       * For each base64-encoded commit object in the request, decode it and verify that its cryptographic hash matches its expected commit ID. If any commit object is malformed or does not hash correctly, return `422 Unprocessable Entity`.
-     * **Ancestry Traversal:**
-       * Start at the new checkpoint commit tip and traverse backward through parent linkages using the provided set of decoded commit objects.
-       * If the witness's stored commit is successfully reached along this path, the verification succeeds.
-       * If the traversal stops (reaches a commit whose parent object is missing from the request payload) before encountering the stored commit, return `422 Unprocessable Entity`.
-5. **State Update:** Update the stored commit hash for the branch to the new commit tip.
+     * **For tags (`refs/tags/*`):**
+       * The witness MUST reject the request with `409 Conflict`. Tags are immutable once witnessed. The response body SHOULD include a message identifying the stored commit.
+     * **For branches (`refs/heads/*`):**
+       * **Decoded Object Validation:**
+         * For each base64-encoded commit object in the request, decode it and verify that its cryptographic hash matches its expected commit ID. If any commit object is malformed or does not hash correctly, return `422 Unprocessable Entity`.
+       * **Ancestry Traversal:**
+         * Start at the new checkpoint commit tip and traverse backward through parent linkages using the provided set of decoded commit objects.
+         * If the witness's stored commit is successfully reached along this path, the verification succeeds.
+         * If the traversal stops (reaches a commit whose parent object is missing from the request payload) before encountering the stored commit, return `422 Unprocessable Entity`.
+5. **State Update:** Update the stored commit hash for the ref to the new commit tip (branches only; tags are already at their permanent value).
 6. **Signing:** Generate and return a cosignature line over the checkpoint.
 
 ## HTTP Response Codes
@@ -110,6 +136,7 @@ Upon receiving a `POST /add-checkpoint` request, the witness MUST perform the fo
 | **400 Bad Request** | The request body is malformed or invalidly formatted. |
 | **403 Forbidden** | The origin signature does not verify against the configured trusted public key. |
 | **404 Not Found** | The repository origin is unknown or unauthorized on this witness. |
+| **409 Conflict** | The submitted tag checkpoint has a different commit than the witness's stored state. Tags are immutable once witnessed. |
 | **422 Unprocessable Entity** | The provided ancestry proof (commit chain) is broken, incomplete, contains invalid/malformed objects, or fails to connect the new tip back to the witness's stored commit. |
 
 ### Success Response Format (200 OK)

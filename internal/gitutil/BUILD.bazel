@@ -4,6 +4,7 @@ go_library(
     name = "gitutil",
     srcs = [
         "commit_hash.go",
+        "ref.go",
         "repo.go",
     ],
     importpath = "github.com/BenBirt/git-ratchet/internal/gitutil",
