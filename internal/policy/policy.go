@@ -21,7 +21,9 @@ import (
 	"bytes"
 	"crypto"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -30,9 +32,9 @@ import (
 
 // Witness is a single trusted cosigner.
 type Witness struct {
-	PolicyName string           // local label in the policy file
-	SignerName string           // signer name embedded in the vkey; used to match cosig lines
-	Endpoint   string           // HTTP endpoint; empty for offline-only verification
+	PolicyName string // local label in the policy file
+	SignerName string // signer name embedded in the vkey; used to match cosig lines
+	Endpoint   string // HTTP endpoint; empty for offline-only verification
 	Key        crypto.PublicKey
 	SigType    note.SigType
 	keyHash    [4]byte // SHA-256(signerName+"\n"+typeByte+pub)[:4]
@@ -73,6 +75,7 @@ type Policy struct {
 	groups    map[string]*Group
 	quorum    *Group // nil means "quorum none"
 	quorumSet bool
+	refs      map[string]bool
 }
 
 // Witnesses returns all witnesses defined in the policy.
@@ -83,6 +86,18 @@ func (p *Policy) Witnesses() []*Witness {
 		ws = append(ws, w)
 	}
 	return ws
+}
+
+// Refs returns the list of ref paths from "ref" directives, in the order
+// they appear in the policy file. Returns nil if no ref directives are present.
+func (p *Policy) Refs() []string {
+	return slices.Collect(maps.Keys(p.refs))
+}
+
+// HasRef reports whether the given ref path is listed in the policy's
+// ref directives.
+func (p *Policy) HasRef(ref string) bool {
+	return p.refs[ref]
 }
 
 // Load reads and parses a policy file.
@@ -96,6 +111,7 @@ func Load(path string) (*Policy, error) {
 	p := &Policy{
 		witnesses: make(map[string]*Witness),
 		groups:    make(map[string]*Group),
+		refs:      make(map[string]bool),
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -225,6 +241,19 @@ func Load(path string) (*Policy, error) {
 				}
 				p.quorum = g
 			}
+
+		case "ref":
+			if len(fields) != 2 {
+				return nil, fmt.Errorf("ref: expected 1 ref path argument")
+			}
+			refPath := fields[1]
+			if !strings.HasPrefix(refPath, "refs/heads/") && !strings.HasPrefix(refPath, "refs/tags/") {
+				return nil, fmt.Errorf("ref: path must begin with refs/heads/ or refs/tags/, got %q", refPath)
+			}
+			if p.refs[refPath] {
+				return nil, fmt.Errorf("ref: duplicate ref %q", refPath)
+			}
+			p.refs[refPath] = true
 
 		default:
 			return nil, fmt.Errorf("unknown directive: %q", fields[0])

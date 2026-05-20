@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BenBirt/git-ratchet/internal/gitutil"
@@ -29,23 +30,8 @@ func main() {
 	os.Exit(int(subcommands.Execute(ctx)))
 }
 
-// resolveRef parses the --branch and --tag flags and returns the full ref
-// path and its kind. It exits with an error if both or neither flag is set.
-func resolveRef(branch, tag string) (ref string, kind gitutil.RefKind) {
-	if (branch == "" && tag == "") || (branch != "" && tag != "") {
-		fmt.Fprintln(os.Stderr, "error: exactly one of --branch or --tag is required")
-		os.Exit(1)
-	}
-	if tag != "" {
-		return "refs/tags/" + tag, gitutil.RefTag
-	}
-	return "refs/heads/" + branch, gitutil.RefBranch
-}
-
 type checkpointCmd struct {
-	branch     string
-	tag        string
-	commit     string
+	ref        string
 	policyPath string
 	keyPath    string
 	repoDir    string
@@ -61,68 +47,71 @@ func (*checkpointCmd) Usage() string {
   file, collects cosignatures, and stores the cosigned checkpoint as a Git
   ref (refs/checkpoints/heads/<branch> or refs/checkpoints/tags/<tag>).
 
-  For branches, witnesses enforce a forward-only ratchet: the new commit
-  must be a descendant of the previously witnessed commit.
+  For branches (refs/heads/*), witnesses enforce a forward-only ratchet: the
+  new commit must be a descendant of the previously witnessed commit.
 
-  For tags, witnesses enforce immutability: the tag is pinned to the first
-  commit it is witnessed at, and any subsequent checkpoint with a different
-  commit is rejected.
+  For tags (refs/tags/*), witnesses enforce immutability: the tag is pinned to
+  the first commit it is witnessed at, and any subsequent checkpoint with a
+  different commit is rejected.
 
 `
 }
 
 func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&c.branch, "branch", "", "Branch to checkpoint (mutually exclusive with --tag)")
-	f.StringVar(&c.tag, "tag", "", "Tag to checkpoint (mutually exclusive with --branch)")
-	f.StringVar(&c.commit, "commit", "", "Commit hash (default: resolve from ref)")
+	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if c.policyPath == "" || c.keyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --policy and --key are required")
+	if c.ref == "" || c.policyPath == "" || c.keyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and --key are required")
 		fmt.Fprint(os.Stderr, c.Usage())
 		return subcommands.ExitUsageError
 	}
 
-	ref, kind := resolveRef(c.branch, c.tag)
+	kind, err := gitutil.ParseRefKind(c.ref)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
+		return subcommands.ExitUsageError
+	}
 
 	// Load the origin signing key (algorithm detected from key file vkey).
 	signer, err := note.ReadKeyFile(c.keyPath, note.RoleOrigin)
 	if err != nil {
-		fatalf("loading key: %v", err)
+		fmt.Fprintf(os.Stderr, "error: loading key: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
 	// Load the policy.
 	pol, err := policy.Load(c.policyPath)
 	if err != nil {
-		fatalf("loading policy: %v", err)
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
-	// Resolve commit hash if not specified.
-	commit := c.commit
-	if commit == "" {
-		commit, err = gitutil.ResolveRef(c.repoDir, ref)
-		if err != nil {
-			fatalf("resolving ref: %v", err)
-		}
+	// Resolve commit hash from the ref.
+	commit, err := gitutil.ResolveRef(c.repoDir, c.ref)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: resolving ref: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
 	// Build the checkpoint body using the log name from the policy.
-	body := pol.LogName + " " + ref + "\n" + commit + "\n"
+	body := pol.LogName + " " + c.ref + "\n" + commit + "\n"
 
 	// Sign the checkpoint.
 	signed, err := note.Sign(body, signer)
 	if err != nil {
-		fatalf("signing checkpoint: %v", err)
+		fmt.Fprintf(os.Stderr, "error: signing checkpoint: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
 	// Build ancestry proof (branches only; tags don't need one).
 	var ancestry []string
 	if kind == gitutil.RefBranch {
-		if oldCheckpoint, err := gitutil.ReadCheckpoint(c.repoDir, ref); err == nil {
+		if oldCheckpoint, err := gitutil.ReadCheckpoint(c.repoDir, c.ref); err == nil {
 			oldBody, err := note.ExtractBody(oldCheckpoint)
 			if err == nil {
 				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
@@ -130,7 +119,8 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 					oldCommit := strings.TrimSpace(lines[1])
 					ancestry, err = gitutil.GetCommitChain(c.repoDir, oldCommit, commit)
 					if err != nil {
-						fatalf("failed to generate ancestry proof: %v", err)
+						fmt.Fprintf(os.Stderr, "error: generating ancestry proof: %v\n", err)
+						return subcommands.ExitFailure
 					}
 				}
 			}
@@ -169,50 +159,52 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	// Verify the assembled checkpoint satisfies the policy quorum.
 	assembledBody, assembledSigLines, err := note.ParseSignedNote(signed)
 	if err != nil {
-		fatalf("parsing assembled checkpoint: %v", err)
+		fmt.Fprintf(os.Stderr, "error: parsing assembled checkpoint: %v\n", err)
+		return subcommands.ExitFailure
 	}
 	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
-		fatalf("checkpoint does not meet policy quorum: %v", err)
+		fmt.Fprintf(os.Stderr, "error: quorum not satisfied: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
 	// Store the checkpoint as a git ref.
-	if err := gitutil.StoreCheckpoint(c.repoDir, ref, signed); err != nil {
-		fatalf("storing checkpoint: %v", err)
+	if err := gitutil.StoreCheckpoint(c.repoDir, c.ref, signed); err != nil {
+		fmt.Fprintf(os.Stderr, "error: storing checkpoint: %v\n", err)
+		return subcommands.ExitFailure
 	}
 
-	cpRef := "refs/checkpoints/" + strings.TrimPrefix(ref, "refs/")
+	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
 	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, cosigned)
 	return subcommands.ExitSuccess
 }
 
 type verifyCmd struct {
-	branch     string
-	tag        string
-	commit     string
+	ref        string
 	policyPath string
 	repoDir    string
 }
 
 func (*verifyCmd) Name() string     { return "verify" }
-func (*verifyCmd) Synopsis() string { return "Verify a ref checkpoint against a witness policy" }
+func (*verifyCmd) Synopsis() string { return "Verify ref checkpoints against a witness policy" }
 func (*verifyCmd) Usage() string {
 	return `verify [flags]:
-  Verify a ref checkpoint against a witness policy.
+  Verify ref checkpoints against a witness policy.
 
-  Fetches the checkpoint ref, verifies the origin signature and witness
-  cosignatures against the policy, and confirms the current ref still
-  matches the checkpointed commit.
+  Verifies checkpoint signatures against the policy and confirms each ref
+  still matches the checkpointed commit.
 
-  For branches, the local HEAD must not be ahead of the checkpointed commit.
+  If --ref is specified, only that ref is verified (it must be listed in
+  the policy's ref directives). If --ref is omitted, all refs listed in
+  the policy are verified.
+
+  For branches, the local ref must not be ahead of the checkpointed commit.
   For tags, the tag must still point to the exact checkpointed commit.
 
 `
 }
 
 func (c *verifyCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&c.branch, "branch", "", "Branch to verify (mutually exclusive with --tag)")
-	f.StringVar(&c.tag, "tag", "", "Tag to verify (mutually exclusive with --branch)")
-	f.StringVar(&c.commit, "commit", "", "Commit hash to check against checkpoint (default: resolve from ref)")
+	f.StringVar(&c.ref, "ref", "", "Full ref path to verify (e.g. refs/heads/main); if omitted, verify all refs in the policy")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 }
@@ -224,86 +216,121 @@ func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcom
 		return subcommands.ExitUsageError
 	}
 
-	ref, kind := resolveRef(c.branch, c.tag)
-
 	// Load the policy.
 	pol, err := policy.Load(c.policyPath)
 	if err != nil {
-		fatalf("loading policy: %v", err)
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Determine which refs to verify.
+	var refs []string
+	if c.ref != "" {
+		if _, err := gitutil.ParseRefKind(c.ref); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
+			return subcommands.ExitUsageError
+		}
+		if !pol.HasRef(c.ref) {
+			fmt.Fprintf(os.Stderr, "error: ref %q is not listed in the policy\n", c.ref)
+			return subcommands.ExitFailure
+		}
+		refs = []string{c.ref}
+	} else {
+		refs = pol.Refs()
+		if len(refs) == 0 {
+			fmt.Fprintln(os.Stderr, "error: no refs to verify: add ref directives to the policy or use --ref")
+			return subcommands.ExitUsageError
+		}
+	}
+
+	// Verify refs in parallel.
+	type verifyResult struct {
+		ref string
+		err error
+	}
+	results := make([]verifyResult, len(refs))
+	var wg sync.WaitGroup
+	for i, ref := range refs {
+		wg.Add(1)
+		go func(i int, ref string) {
+			defer wg.Done()
+			results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
+		}(i, ref)
+	}
+	wg.Wait()
+
+	failed := 0
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL %s: %v\n", r.ref, r.err)
+			failed++
+		} else {
+			fmt.Printf("ok   %s\n", r.ref)
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d of %d refs failed verification\n", failed, len(refs))
+		return subcommands.ExitFailure
+	}
+	return subcommands.ExitSuccess
+}
+
+// verifySingleRef verifies a single ref's checkpoint against the policy.
+func verifySingleRef(repoDir, ref string, pol *policy.Policy) error {
+	kind, err := gitutil.ParseRefKind(ref)
+	if err != nil {
+		return err
 	}
 
 	// Read the stored checkpoint.
-	checkpoint, err := gitutil.ReadCheckpoint(c.repoDir, ref)
+	checkpoint, err := gitutil.ReadCheckpoint(repoDir, ref)
 	if err != nil {
 		cpRef := "refs/checkpoints/" + strings.TrimPrefix(ref, "refs/")
-		fmt.Fprintf(os.Stderr, "error: no checkpoint found for ref %q\n", ref)
-		fmt.Fprintf(os.Stderr, "hint: if this repo was cloned, fetch the checkpoint ref with:\n")
-		fmt.Fprintf(os.Stderr, "  git fetch origin %s:%s\n", cpRef, cpRef)
-		os.Exit(1)
+		return fmt.Errorf("no checkpoint found for ref %q (hint: git fetch origin %s:%s)", ref, cpRef, cpRef)
 	}
 
 	// Parse the signed note.
 	body, sigLines, err := note.ParseSignedNote(checkpoint)
 	if err != nil {
-		fatalf("parsing checkpoint: %v", err)
+		return fmt.Errorf("parsing checkpoint: %w", err)
 	}
 
 	// Verify origin signature and witness cosignatures.
 	if err := pol.Verify(body, sigLines); err != nil {
-		fatalf("checkpoint verification failed: %v", err)
+		return fmt.Errorf("checkpoint verification failed: %w", err)
 	}
 
 	// Extract the checkpointed commit hash from the note body.
 	bodyLines := strings.Split(strings.TrimSpace(body), "\n")
 	if len(bodyLines) < 2 {
-		fatalf("malformed checkpoint body")
+		return fmt.Errorf("malformed checkpoint body")
 	}
 	checkpointedCommit := strings.TrimSpace(bodyLines[1])
 
-	// Determine the commit to check: explicit --commit or resolve from ref.
-	var localCommit string
-	if c.commit != "" {
-		localCommit = c.commit
-	} else {
-		localCommit, err = gitutil.ResolveRef(c.repoDir, ref)
-		if err != nil {
-			fatalf("resolving ref: %v", err)
-		}
+	// Resolve the current commit from the ref.
+	localCommit, err := gitutil.ResolveRef(repoDir, ref)
+	if err != nil {
+		return fmt.Errorf("resolving ref: %w", err)
 	}
 
 	if kind == gitutil.RefTag {
 		// Tag pinning: current commit must exactly match checkpoint.
 		if localCommit != checkpointedCommit {
-			fmt.Fprintf(os.Stderr, "error: tag does not match checkpoint\n")
-			fmt.Fprintf(os.Stderr, "  current commit:       %s\n", localCommit)
-			fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
-			fmt.Fprintf(os.Stderr, "The tag has been moved since it was witnessed.\n")
-			os.Exit(1)
+			return fmt.Errorf("tag does not match checkpoint (current: %s, checkpointed: %s)", localCommit, checkpointedCommit)
 		}
 	} else {
 		// Branch ratchet: local commit must be ancestor-or-equal of the
 		// checkpointed commit. If it is ahead, those commits are
 		// unwitnessed and could be silently removed.
-		ok, err := gitutil.IsAncestor(c.repoDir, localCommit, checkpointedCommit)
+		ok, err := gitutil.IsAncestor(repoDir, localCommit, checkpointedCommit)
 		if err != nil {
-			fatalf("checking ancestry: %v", err)
+			return fmt.Errorf("checking ancestry: %w", err)
 		}
 		if !ok {
-			fmt.Fprintf(os.Stderr, "error: local commit is ahead of the last witnessed checkpoint\n")
-			fmt.Fprintf(os.Stderr, "  local commit:         %s\n", localCommit)
-			fmt.Fprintf(os.Stderr, "  checkpointed commit:  %s\n", checkpointedCommit)
-			fmt.Fprintf(os.Stderr, "Commits after the checkpoint have not been witnessed and could be\n")
-			fmt.Fprintf(os.Stderr, "silently removed. Run \"git-ratchet checkpoint\" to extend the ratchet.\n")
-			os.Exit(1)
+			return fmt.Errorf("local commit %s is ahead of checkpointed commit %s", localCommit, checkpointedCommit)
 		}
 	}
 
-	fmt.Printf("verified: %s @ %s (%d cosignatures)\n",
-		strings.TrimSpace(bodyLines[0]), checkpointedCommit[:12], len(sigLines)-1)
-	return subcommands.ExitSuccess
+	return nil
 }
 
-func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
-	os.Exit(1)
-}

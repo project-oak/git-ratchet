@@ -67,13 +67,19 @@ Note: SHA-256 repositories require Git ≥ 2.29 and are not yet widely supported
 
 ## Witness policy
 
-A verifier's policy specifies the trusted origin key, witness keys, and quorum:
+A policy specifies the trusted origin key, witness keys, quorum, and — for verification — the set of refs that must have valid checkpoints. The format extends the C2SP [tlog-policy](https://github.com/C2SP/C2SP/blob/main/tlog-policy.md) specification with a `ref` directive; see [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full format.
 
 ```
-origin example-origin+a1b2c3d4+<base64 public key>
-witness witness1+e5f6a7b8+<base64 public key>
-witness witness2+c9d0e1f2+<base64 public key>
-quorum 2
+log example-origin+a1b2c3d4+<base64 public key>
+
+ref refs/heads/main
+ref refs/tags/v1.0.0
+
+witness w1 https://witness.example.com witness1+e5f6a7b8+<base64 public key>
+witness w2 https://witness2.example.com witness2+c9d0e1f2+<base64 public key>
+
+group all-witnesses all w1 w2
+quorum all-witnesses
 ```
 
 Verification succeeds only if the checkpoint carries a valid origin signature and valid cosignatures from at least `quorum` witnesses listed in the policy.
@@ -81,11 +87,11 @@ Verification succeeds only if the checkpoint carries a valid origin signature an
 ## Usage
 
 ```
-git-ratchet checkpoint --branch <name> [flags]
-git-ratchet checkpoint --tag <name> [flags]
-git-ratchet verify --branch <name> [flags]
-git-ratchet verify --tag <name> [flags]
+git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [flags]
+git-ratchet verify --policy <path> [--ref <refpath>] [flags]
 ```
+
+If `--ref` is omitted from `verify`, all refs listed in the policy are verified.
 
 See `git-ratchet <command> --help` for details.
 
@@ -102,18 +108,6 @@ A `git-ratchet audit` command could combine several checks into a single compreh
 - **Replace ref detection**: Check for the existence of any refs under `refs/replace/` and loudly warn if found, since replace refs break the Merkle chain assumptions that git-ratchet relies on.
 
 This would provide a stronger end-to-end integrity guarantee than any of these checks in isolation.
-
-### Policy structure and naming
-
-The policy file currently uses C2SP [tlog-policy](https://c2sp.org/tlog-policy) conventions: a `log` directive names the origin, and witnesses are listed with their verifier keys. The log name (e.g., `github.com/example/repo`) is a free-form string that must match the first line of every checkpoint, but there is no formal relationship between it and the Git remote URL, repository name, or the specific branch or tag being protected.
-
-This creates an awkward gap: a single policy covers one "log" (origin key), but git-ratchet operates on individual refs within a repository. Questions to resolve include:
-
-- Should the policy be scoped to a repository, or to individual refs? A policy-per-ref would allow different witness quorums for `main` vs. release tags, but adds configuration overhead.
-- Should the log name be derived from the Git remote URL, or remain an opaque identifier? Deriving it reduces misconfiguration but ties the policy to hosting infrastructure.
-- Should the policy file live in the repository itself (discoverable, versioned) or out-of-band (harder to tamper with, but less convenient)?
-
-If the policy encodes the full ref (e.g., `github.com/example/repo refs/heads/main`), the `--branch` and `--tag` flags on `verify` become redundant — the ref path and its kind can be derived from the policy's log name. This would simplify the verify CLI to just `git-ratchet verify --policy <path>`.
 
 ## Building
 

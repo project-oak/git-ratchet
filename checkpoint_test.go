@@ -39,8 +39,7 @@ func TestCheckpointBasic(t *testing.T) {
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
-		"--commit", commitHash,
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -113,7 +112,7 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -126,7 +125,7 @@ func TestCheckpointMultipleCommits(t *testing.T) {
 
 	out, err = exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -170,7 +169,7 @@ func TestCheckpointInsufficientWitnesses(t *testing.T) {
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -193,15 +192,14 @@ func TestVerifyBasic(t *testing.T) {
 	defer ws.Close()
 
 	repoDir := initTestRepo(t)
-	commitHash := makeCommit(t, repoDir, "initial commit")
+	_ = makeCommit(t, repoDir, "initial commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL, "refs/heads/main")
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
-		"--commit", commitHash,
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -212,7 +210,7 @@ func TestVerifyBasic(t *testing.T) {
 
 	out, err = exec.Command(binary,
 		"verify",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -233,11 +231,11 @@ func TestVerifyNoCheckpoint(t *testing.T) {
 	repoDir := initTestRepo(t)
 	_ = makeCommit(t, repoDir, "initial commit")
 
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused", "refs/heads/main")
 
 	out, err := exec.Command(binary,
 		"verify",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -261,16 +259,15 @@ func TestVerifyAheadOfCheckpoint(t *testing.T) {
 	defer ws.Close()
 
 	repoDir := initTestRepo(t)
-	commitA := makeCommit(t, repoDir, "first commit")
+	_ = makeCommit(t, repoDir, "first commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL, "refs/heads/main")
 
-	// Checkpoint at commit A.
+	// Checkpoint at the first commit.
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
-		"--commit", commitA,
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -279,12 +276,12 @@ func TestVerifyAheadOfCheckpoint(t *testing.T) {
 		t.Fatalf("checkpoint failed: %v\n%s", err, out)
 	}
 
-	// Advance HEAD to commit B (unwitnessed).
+	// Advance HEAD to a second commit (unwitnessed).
 	_ = makeCommit(t, repoDir, "second commit not yet witnessed")
 
 	out, err = exec.Command(binary,
 		"verify",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -307,15 +304,14 @@ func TestVerifyTamperedNote(t *testing.T) {
 	defer ws.Close()
 
 	repoDir := initTestRepo(t)
-	commitHash := makeCommit(t, repoDir, "initial commit")
+	_ = makeCommit(t, repoDir, "initial commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL, "refs/heads/main")
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--branch", "main",
-		"--commit", commitHash,
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -347,7 +343,7 @@ func TestVerifyTamperedNote(t *testing.T) {
 
 	out, err = exec.Command(binary,
 		"verify",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -368,7 +364,7 @@ func TestVerifyInsufficientCosigs(t *testing.T) {
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "initial commit")
 
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused", "refs/heads/main")
 
 	// Build a note with only the origin (log) signature — no cosig.
 	body := originKey.Name + " refs/heads/main\n" + commitHash + "\n"
@@ -390,7 +386,7 @@ func TestVerifyInsufficientCosigs(t *testing.T) {
 
 	out, err := exec.Command(binary,
 		"verify",
-		"--branch", "main",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -422,13 +418,13 @@ func TestTagCheckpointBasic(t *testing.T) {
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("git-ratchet checkpoint --tag failed: %v\n%s", err, out)
+		t.Fatalf("git-ratchet checkpoint --ref failed: %v\n%s", err, out)
 	}
 	t.Logf("checkpoint output: %s", out)
 
@@ -463,16 +459,15 @@ func TestTagVerifyBasic(t *testing.T) {
 	defer ws.Close()
 
 	repoDir := initTestRepo(t)
-	commitHash := makeCommit(t, repoDir, "tagged release")
+	_ = makeCommit(t, repoDir, "tagged release")
 	run(t, repoDir, "git", "tag", "v1.0.0")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL, "refs/tags/v1.0.0")
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--tag", "v1.0.0",
-		"--commit", commitHash,
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -483,7 +478,7 @@ func TestTagVerifyBasic(t *testing.T) {
 
 	out, err = exec.Command(binary,
 		"verify",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -508,11 +503,11 @@ func TestTagVerifyMoved(t *testing.T) {
 	run(t, repoDir, "git", "tag", "v1.0.0")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL, "refs/tags/v1.0.0")
 
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -527,7 +522,7 @@ func TestTagVerifyMoved(t *testing.T) {
 
 	out, err = exec.Command(binary,
 		"verify",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -559,7 +554,7 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	// First checkpoint — should succeed.
 	out, err := exec.Command(binary,
 		"checkpoint",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -575,7 +570,7 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	// Second checkpoint — should fail because witness rejects immutability violation.
 	out, err = exec.Command(binary,
 		"checkpoint",
-		"--tag", "v1.0.0",
+		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
 		"--policy", policyPath,
@@ -584,6 +579,196 @@ func TestTagCheckpointImmutability(t *testing.T) {
 		t.Fatalf("expected second checkpoint to fail after tag was moved, but it succeeded:\n%s", out)
 	}
 	t.Logf("second checkpoint error (expected): %s", out)
+}
+
+// TestVerifyAllRefsFromPolicy creates a policy with two ref directives,
+// checkpoints both, and verifies that "verify --policy" (no --ref) succeeds.
+func TestVerifyAllRefsFromPolicy(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL,
+		"refs/heads/main", "refs/tags/v1.0.0")
+
+	// Checkpoint both refs.
+	for _, ref := range []string{"refs/heads/main", "refs/tags/v1.0.0"} {
+		out, err := exec.Command(binary,
+			"checkpoint",
+			"--ref", ref,
+			"--repo", repoDir,
+			"--key", keyPath,
+			"--policy", policyPath,
+		).CombinedOutput()
+		if err != nil {
+			t.Fatalf("checkpoint %s failed: %v\n%s", ref, err, out)
+		}
+	}
+
+	// Verify all refs from policy (no --ref flag).
+	out, err := exec.Command(binary,
+		"verify",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify all refs failed: %v\n%s", err, out)
+	}
+	t.Logf("verify output: %s", out)
+
+	// Output should mention both refs.
+	if !strings.Contains(string(out), "refs/heads/main") {
+		t.Errorf("expected output to mention refs/heads/main, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "refs/tags/v1.0.0") {
+		t.Errorf("expected output to mention refs/tags/v1.0.0, got:\n%s", out)
+	}
+}
+
+// TestVerifyRefNotInPolicy verifies that --ref fails if the ref is not
+// listed in the policy's ref directives.
+func TestVerifyRefNotInPolicy(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused",
+		"refs/heads/main")
+
+	out, err := exec.Command(binary,
+		"verify",
+		"--ref", "refs/heads/develop",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail for ref not in policy, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "not listed in the policy") {
+		t.Errorf("expected 'not listed in the policy' error, got:\n%s", out)
+	}
+}
+
+// TestVerifyNoRefDirectives verifies that "verify --policy" fails when the
+// policy has no ref directives and --ref is not specified.
+func TestVerifyNoRefDirectives(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	// Policy with no ref directives.
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+
+	out, err := exec.Command(binary,
+		"verify",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail with no ref directives, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "no ref") {
+		t.Errorf("expected 'no ref' in error output, got:\n%s", out)
+	}
+}
+
+// TestVerifyRefFilterFromPolicy creates a policy with two refs, checkpoints
+// both, and verifies that --ref filters to just one.
+func TestVerifyRefFilterFromPolicy(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+	run(t, repoDir, "git", "tag", "v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL,
+		"refs/heads/main", "refs/tags/v1.0.0")
+
+	// Checkpoint both refs.
+	for _, ref := range []string{"refs/heads/main", "refs/tags/v1.0.0"} {
+		out, err := exec.Command(binary,
+			"checkpoint",
+			"--ref", ref,
+			"--repo", repoDir,
+			"--key", keyPath,
+			"--policy", policyPath,
+		).CombinedOutput()
+		if err != nil {
+			t.Fatalf("checkpoint %s failed: %v\n%s", ref, err, out)
+		}
+	}
+
+	// Verify only refs/heads/main (filter via --ref).
+	out, err := exec.Command(binary,
+		"verify",
+		"--ref", "refs/heads/main",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify --ref failed: %v\n%s", err, out)
+	}
+
+	// Output should mention main but not v1.0.0.
+	if !strings.Contains(string(out), "refs/heads/main") {
+		t.Errorf("expected output to mention refs/heads/main, got:\n%s", out)
+	}
+	if strings.Contains(string(out), "refs/tags/v1.0.0") {
+		t.Errorf("expected output to NOT mention refs/tags/v1.0.0, got:\n%s", out)
+	}
+}
+
+// TestCheckpointIgnoresRefDirectives verifies that the checkpoint command
+// does not consult ref directives — it checkpoints whatever --ref says.
+func TestCheckpointIgnoresRefDirectives(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	// Policy only lists refs/tags/v1.0.0 — but we checkpoint refs/heads/main.
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL,
+		"refs/tags/v1.0.0")
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/heads/main",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected checkpoint to succeed despite ref not in policy, but it failed: %v\n%s", err, out)
+	}
+	t.Logf("checkpoint output: %s", out)
 }
 
 func mustFindBinary(t *testing.T) string {
@@ -646,13 +831,19 @@ func writeKeyFile(t *testing.T, dir string, s *note.Signer) string {
 	return p
 }
 
-func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string) string {
+// writePolicyFile creates a policy file with the given log, witness, and
+// optional ref directives. The refs parameter lists full ref paths
+// (e.g. "refs/heads/main", "refs/tags/v1.0.0") to emit as ref directives.
+func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string, refs ...string) string {
 	t.Helper()
 	p := filepath.Join(dir, "policy.txt")
-	// tlog-policy format: log, named witness (w1), quorum referencing the witness by name.
-	content := fmt.Sprintf("log %s\nwitness w1 %s %s\nquorum w1\n",
-		log.VKey(), witnessURL, witness.VKey())
-	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+	var b strings.Builder
+	fmt.Fprintf(&b, "log %s\n", log.VKey())
+	for _, ref := range refs {
+		fmt.Fprintf(&b, "ref %s\n", ref)
+	}
+	fmt.Fprintf(&b, "witness w1 %s %s\nquorum w1\n", witnessURL, witness.VKey())
+	if err := os.WriteFile(p, []byte(b.String()), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return p
