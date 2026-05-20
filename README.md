@@ -55,9 +55,20 @@ A `git-ratchet audit` command could combine several checks into a single compreh
 
 - **`git fsck`**: Walk the full object database and verify that every object's content matches its hash, all referenced objects exist, and the DAG is well-formed.
 - **`git-ratchet verify`**: Verify all checkpoint refs against the witness policy.
-- **Replace ref detection**: Check for the existence of any refs under `refs/replace/` and loudly warn if found, since replace refs break the Merkle chain assumptions that git-ratchet relies on.
+- **Replace ref rejection**: Error if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on: a checkpoint binds a ref to a commit hash, but replace refs can change the content served for that hash without invalidating the checkpoint. Since replace refs are not fetched by default (`git clone` and `git fetch` only transfer `refs/heads/*` and `refs/tags/*`), most repositories will not have them, and their presence should be treated as an integrity violation.
 
 This would provide a stronger end-to-end integrity guarantee than any of these checks in isolation.
+
+### Replace ref tracking (potential future extension)
+
+Some repositories — particularly those with long histories stitched together from pre-Git version control systems — have legitimate replace refs (e.g. grafts from SVN migrations). For these repositories, a future extension could allow replace refs to coexist with git-ratchet by tracking them in a dedicated branch:
+
+1. A branch (e.g. `_replace-log`) would contain a `replace-map` file listing every approved `<original-sha> <replacement-sha>` pair.
+2. This branch would be checkpointed and witnessed like any other branch, using forward-only ratchet semantics. The full history of replace ref additions, modifications, and deletions would be preserved as commits on this branch.
+3. `audit` would cross-reference the actual `refs/replace/*` state against the latest `replace-map`, erroring on any untracked, missing, or modified replace refs.
+4. A `git-ratchet sync-replace` command would reconstruct local `refs/replace/*` from the tracking branch, sidestepping the fact that Git does not propagate replace refs by default.
+
+This would keep the witness role simple (it just enforces forward-only on a branch), keep the audit trail in the Git DAG (not in witness state), and provide a clear onboarding path for legacy repositories.
 
 ## Building
 
