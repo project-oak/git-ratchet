@@ -22,36 +22,7 @@ git-ratchet closes this gap:
 
 ## Checkpoint format
 
-A checkpoint is a [C2SP signed note](https://c2sp.org/signed-note) with a structured body identifying the repository and ref:
-
-```
-github.com/example/repo refs/heads/main
-4f0f30afb02b71590f0b2e0a67f0b846715e1d04
-
-— example-origin+a1b2c3d4 <base64 signature>
-— witness1+e5f6a7b8 <base64 cosignature>
-— witness2+c9d0e1f2 <base64 cosignature>
-```
-
-The first line is the **origin** — a string identifying the repository and ref. The second line is the commit hash. The signatures follow the [signed-note](https://c2sp.org/signed-note) format: the origin signs the checkpoint, and witnesses append cosignatures.
-
-Tag checkpoints use the same format with a tag ref:
-
-```
-github.com/example/repo refs/tags/v1.2.3
-4f0f30afb02b71590f0b2e0a67f0b846715e1d04
-
-— example-origin+a1b2c3d4 <base64 signature>
-— witness1+e5f6a7b8 <base64 cosignature>
-```
-
-The origin is identified by a [verifier key](https://c2sp.org/signed-note) (vkey):
-
-```
-example-origin+a1b2c3d4+<base64 public key>
-```
-
-This key is configured in the witness (so the witness knows which origins it serves) and in the verifier policy (so verifiers know which origin key to trust).
+A checkpoint is a [signed note](https://c2sp.org/signed-note) binding a repository ref to a commit hash, signed by the origin and cosigned by independent witnesses. See [docs/git-checkpoint.md](docs/git-checkpoint.md) for the full format specification.
 
 ## Ancestry proofs
 
@@ -59,30 +30,9 @@ For branch checkpoints, the witness does not need a full clone of the repository
 
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
-## Hash function support
-
-Git repositories use either SHA-1 or SHA-256 as their object hash, controlled by `extensions.objectFormat`. git-ratchet handles both transparently: the hash algorithm is inferred from the length of the commit ID in the checkpoint (40 hex characters → SHA-1, 64 → SHA-256). Ancestry proofs are verified using the same algorithm. No configuration is required — git-ratchet will work correctly with whichever object format the repository uses.
-
-Note: SHA-256 repositories require Git ≥ 2.29 and are not yet widely supported by hosting platforms. git-ratchet's SHA-256 support is tested synthetically (with constructed commit objects) rather than against live SHA-256 repositories.
-
 ## Witness policy
 
-A policy specifies the trusted origin key, witness keys, quorum, and — for verification — the set of refs that must have valid checkpoints. The format extends the C2SP [tlog-policy](https://github.com/C2SP/C2SP/blob/main/tlog-policy.md) specification with a `ref` directive; see [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full format.
-
-```
-log example-origin+a1b2c3d4+<base64 public key>
-
-ref refs/heads/main
-ref refs/tags/v1.0.0
-
-witness w1 https://witness.example.com witness1+e5f6a7b8+<base64 public key>
-witness w2 https://witness2.example.com witness2+c9d0e1f2+<base64 public key>
-
-group all-witnesses all w1 w2
-quorum all-witnesses
-```
-
-Verification succeeds only if the checkpoint carries a valid origin signature and valid cosignatures from at least `quorum` witnesses listed in the policy.
+A policy specifies the trusted origin key, witness keys, and quorum. The format extends the C2SP [tlog-policy](https://github.com/C2SP/C2SP/blob/main/tlog-policy.md) specification with a `ref` directive for enumerating protected refs; see [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full format.
 
 ## Usage
 

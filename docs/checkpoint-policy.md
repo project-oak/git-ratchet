@@ -4,7 +4,7 @@ This document specifies the policy file format used by git-ratchet to verify Git
 
 [tlog-policy]: https://github.com/C2SP/C2SP/blob/main/tlog-policy.md
 [signed-note]: https://c2sp.org/signed-note@v1.0.0
-[checkpoint]: ../README.md#checkpoint-format
+[checkpoint]: git-checkpoint.md
 
 ## Conventions used in this document
 
@@ -68,20 +68,7 @@ For verification, `ref` directives define the complete set of refs that the veri
 
 ## Checkpoint body format
 
-The first line of a [checkpoint][] body combines the log's origin line (from the `log` directive's vkey key name) and the full ref path:
-
-```
-<origin> <refpath>
-```
-
-For example, a checkpoint for `refs/heads/main` on a log whose origin line is `github.com/example/repo` has the body:
-
-```
-github.com/example/repo refs/heads/main
-4f0f30afb02b71590f0b2e0a67f0b846715e1d04
-```
-
-The origin string is the canonical name for the repository. It is an opaque identifier embedded in the origin key and is not derived from Git remote URLs at runtime.
+The checkpoint body format is defined in [git-checkpoint.md](git-checkpoint.md). The origin string in the checkpoint body is the key name from the `log` directive's vkey — this is how the policy connects the origin key to the checkpoints it signs.
 
 ## Example policy
 

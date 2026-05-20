@@ -3,7 +3,7 @@
 This document describes a synchronous HTTP-based protocol to obtain [cosignatures][] from Git ref checkpoint witnesses.
 
 [cosignatures]: https://c2sp.org/tlog-cosignature
-[checkpoint]: ../README.md#checkpoint-format
+[checkpoint]: git-checkpoint.md
 [note]: https://c2sp.org/signed-note@v1.0.0
 
 ## Conventions used in this document
