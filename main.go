@@ -24,6 +24,7 @@ func main() {
 
 	subcommands.Register(&checkpointCmd{}, "")
 	subcommands.Register(&verifyCmd{}, "")
+	subcommands.Register(&auditCmd{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
@@ -332,5 +333,116 @@ func verifySingleRef(repoDir, ref string, pol *policy.Policy) error {
 	}
 
 	return nil
+}
+
+type auditCmd struct {
+	policyPath string
+	repoDir    string
+}
+
+func (*auditCmd) Name() string     { return "audit" }
+func (*auditCmd) Synopsis() string { return "Run a comprehensive integrity audit" }
+func (*auditCmd) Usage() string {
+	return `audit [flags]:
+  Run a comprehensive integrity audit of the repository.
+
+  Combines three checks into a single end-to-end integrity scan:
+
+  1. git fsck: Walks the full object database and verifies that every
+     object's content matches its hash, all referenced objects exist,
+     and the DAG is well-formed.
+
+  2. git-ratchet verify: Verifies all checkpoint refs listed in the
+     policy against the witness policy.
+
+  3. Replace ref rejection: Errors if any refs exist under refs/replace/.
+     Replace refs allow transparent object substitution, breaking the
+     Merkle chain property that git-ratchet relies on.
+
+`
+}
+
+func (c *auditCmd) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
+	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+}
+
+func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if c.policyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --policy is required")
+		fmt.Fprint(os.Stderr, c.Usage())
+		return subcommands.ExitUsageError
+	}
+
+	failed := 0
+
+	// Phase 1: git fsck — verify object database integrity.
+	fmt.Println("Running git fsck...")
+	if err := gitutil.Fsck(c.repoDir); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL fsck: %v\n", err)
+		failed++
+	} else {
+		fmt.Println("ok   fsck")
+	}
+
+	// Phase 2: git-ratchet verify — check all policy refs.
+	fmt.Println("Running checkpoint verification...")
+	pol, err := policy.Load(c.policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+	refs := pol.Refs()
+	if len(refs) == 0 {
+		fmt.Fprintln(os.Stderr, "FAIL verify: no refs to verify: add ref directives to the policy")
+		failed++
+	} else {
+		type verifyResult struct {
+			ref string
+			err error
+		}
+		results := make([]verifyResult, len(refs))
+		var wg sync.WaitGroup
+		for i, ref := range refs {
+			wg.Add(1)
+			go func(i int, ref string) {
+				defer wg.Done()
+				results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
+			}(i, ref)
+		}
+		wg.Wait()
+		for _, r := range results {
+			if r.err != nil {
+				fmt.Fprintf(os.Stderr, "FAIL verify %s: %v\n", r.ref, r.err)
+				failed++
+			} else {
+				fmt.Printf("ok   verify %s\n", r.ref)
+			}
+		}
+	}
+
+	// Phase 3: replace ref rejection.
+	fmt.Println("Checking for replace refs...")
+	replaceRefs, err := gitutil.ListReplaceRefs(c.repoDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL replace-refs: %v\n", err)
+		failed++
+	} else if len(replaceRefs) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL replace-refs: found %d replace ref(s) (replace refs allow transparent object substitution, breaking Merkle chain integrity):\n", len(replaceRefs))
+		for _, r := range replaceRefs {
+			fmt.Fprintf(os.Stderr, "       %s\n", r)
+		}
+		failed++
+	} else {
+		fmt.Println("ok   replace-refs")
+	}
+
+	// Summary.
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "\naudit: %d check(s) failed\n", failed)
+		return subcommands.ExitFailure
+	}
+	fmt.Println("\naudit: all checks passed")
+	return subcommands.ExitSuccess
 }
 

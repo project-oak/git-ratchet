@@ -206,6 +206,95 @@ func TestTagIntegration(t *testing.T) {
 	t.Logf("second tag checkpoint (expected failure): %s", out)
 }
 
+// TestAuditIntegration tests the audit command's three phases: fsck, verify,
+// and replace ref rejection.
+func TestAuditIntegration(t *testing.T) {
+	gitRatchetBin := mustFindBinary(t)
+	witnessBin := mustFindWitnessBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	tmpDir := t.TempDir()
+	witnessKeyPath := filepath.Join(tmpDir, "witness.key")
+	mustWriteKey(t, witnessKeyPath, witnessKey)
+
+	originsPath := filepath.Join(tmpDir, "origins.txt")
+	if err := os.WriteFile(originsPath, []byte(originKey.VKey()+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(tmpDir, "state.json")
+	port := getFreePort(t)
+	witnessURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	stopWitness := startWitnessServer(t, witnessBin, port, witnessKeyPath, originsPath, statePath)
+	defer stopWitness()
+
+	clientKeyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL, "refs/heads/main")
+
+	// Checkpoint so that verify passes during audit.
+	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath, "")
+
+	// 1. Clean audit should pass.
+	out, err := exec.Command(gitRatchetBin,
+		"audit",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("audit should pass on clean repo: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "all checks passed") {
+		t.Errorf("expected 'all checks passed' in output, got:\n%s", out)
+	}
+
+	// 2. Audit should fail when replace refs are present.
+	// Get current HEAD and make a second commit, then create a replace ref.
+	headOut, err := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCommit := strings.TrimSpace(string(headOut))
+
+	commitHash2 := makeCommit(t, repoDir, "second commit")
+	// Checkpoint the new commit so verify still passes.
+	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath, "")
+
+	run(t, repoDir, "git", "replace", originalCommit, commitHash2)
+
+	out, err = exec.Command(gitRatchetBin,
+		"audit",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatal("audit should fail when replace refs are present")
+	}
+	if !strings.Contains(string(out), "replace ref") {
+		t.Errorf("expected replace ref failure in output, got:\n%s", out)
+	}
+	// fsck and verify should still pass individually.
+	if !strings.Contains(string(out), "ok   fsck") {
+		t.Errorf("expected fsck to pass, got:\n%s", out)
+	}
+
+	// 3. Audit without --policy should return usage error.
+	out, err = exec.Command(gitRatchetBin,
+		"audit",
+		"--repo", repoDir,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatal("audit without --policy should fail")
+	}
+	if !strings.Contains(string(out), "--policy is required") {
+		t.Errorf("expected usage error about --policy, got:\n%s", out)
+	}
+}
+
 // runVerify invokes git-ratchet verify and returns any error (nil = exit 0).
 func runVerify(t *testing.T, binary, repoDir, policyPath string) error {
 	t.Helper()

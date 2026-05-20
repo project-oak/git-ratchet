@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "gitutil",
     srcs = [
+        "audit.go",
         "commit_hash.go",
         "ref.go",
         "repo.go",
@@ -13,6 +14,9 @@ go_library(
 
 go_test(
     name = "gitutil_test",
-    srcs = ["commit_hash_test.go"],
+    srcs = [
+        "audit_test.go",
+        "commit_hash_test.go",
+    ],
     embed = [":gitutil"],
 )

@@ -36,28 +36,37 @@ A policy specifies the trusted origin key, witness keys, and quorum. The format 
 
 ## Usage
 
+### `git-ratchet checkpoint`
+
 ```
 git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [flags]
+```
+
+Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
+
+### `git-ratchet verify`
+
+```
 git-ratchet verify --policy <path> [--ref <refpath>] [flags]
 ```
 
-If `--ref` is omitted from `verify`, all refs listed in the policy are verified.
+Verifies checkpoint signatures against the policy and confirms each ref still matches the checkpointed commit. If `--ref` is omitted, all refs listed in the policy are verified.
+
+### `git-ratchet audit`
+
+```
+git-ratchet audit --policy <path> [flags]
+```
+
+Runs a comprehensive end-to-end integrity scan combining three checks:
+
+1. **`git fsck`**: Walks the full object database and verifies that every object's content matches its hash, all referenced objects exist, and the DAG is well-formed.
+2. **`git-ratchet verify`**: Verifies all checkpoint refs against the witness policy.
+3. **Replace ref rejection**: Errors if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on. Since replace refs are not fetched by default, their presence is treated as an integrity violation.
 
 See `git-ratchet <command> --help` for details.
 
 ## Future work
-
-### `git-ratchet audit`
-
-git-ratchet's `verify` command checks that a checkpoint is properly signed and that the ref still matches, but it does not verify the integrity of the underlying Git object graph. Git itself only checks object hashes lazily (on read), meaning objects deep in the DAG that are never accessed are never verified. Additionally, Git's [replace refs](https://git-scm.com/docs/git-replace) mechanism allows transparent object substitution at the application layer — silently swapping out any commit, tree, or blob without changing the hashes that reference it.
-
-A `git-ratchet audit` command could combine several checks into a single comprehensive integrity scan:
-
-- **`git fsck`**: Walk the full object database and verify that every object's content matches its hash, all referenced objects exist, and the DAG is well-formed.
-- **`git-ratchet verify`**: Verify all checkpoint refs against the witness policy.
-- **Replace ref rejection**: Error if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on: a checkpoint binds a ref to a commit hash, but replace refs can change the content served for that hash without invalidating the checkpoint. Since replace refs are not fetched by default (`git clone` and `git fetch` only transfer `refs/heads/*` and `refs/tags/*`), most repositories will not have them, and their presence should be treated as an integrity violation.
-
-This would provide a stronger end-to-end integrity guarantee than any of these checks in isolation.
 
 ### Replace ref tracking (potential future extension)
 
