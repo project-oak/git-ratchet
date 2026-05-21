@@ -1,0 +1,32 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_tofu//tf:defs.bzl", "tf_deploy", "tf_library")
+
+package(default_visibility = ["//visibility:public"])
+
+tf_library(
+    name = "witness_lib",
+    srcs = [
+        "main.tf",
+        "variables.tf",
+    ],
+    providers = ["@tf_providers_hashicorp_google//:provider"],
+)
+
+tf_deploy(
+    name = "witness",
+    deps = [":witness_lib"],
+    vars = {
+        "project": "PROJECT",
+        "region": "us-central1",
+    },
+)
+
+sh_binary(
+    name = "upload_keys",
+    srcs = ["upload_keys.sh"],
+)
+
+sh_binary(
+    name = "genkeys",
+    srcs = ["genkeys.sh"],
+)

@@ -2,3 +2,7 @@
 /.ijwb
 /.idea
 *.iml
+
+# Witness deployment keys (secret material — do not commit).
+/deploy/witness/witness-key
+/deploy/witness/origins

@@ -1,4 +1,6 @@
+load("@tar.bzl", "mutate", "tar")
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 
 go_library(
     name = "witness_lib",
@@ -14,6 +16,7 @@ go_library(
 go_binary(
     name = "witness",
     embed = [":witness_lib"],
+    pure = "on",
     visibility = ["//visibility:public"],
 )
 
@@ -22,4 +25,29 @@ go_test(
     srcs = ["server_test.go"],
     data = [":witness"],
     deps = ["//internal/note"],
+)
+
+tar(
+    name = "witness_layer",
+    srcs = [":witness"],
+    mutate = mutate(strip_prefix = package_name() + "/witness_"),
+)
+
+oci_image(
+    name = "witness_image",
+    base = "@distroless_static_linux_amd64",
+    entrypoint = ["/witness"],
+    tars = [":witness_layer"],
+)
+
+# To push, first set your project:
+#   gcloud auth configure-docker us-central1-docker.pkg.dev
+# Then:
+#   bazel run //witness:witness_push
+oci_push(
+    name = "witness_push",
+    image = ":witness_image",
+    # Replace PROJECT with your GCP project ID.
+    repository = "us-central1-docker.pkg.dev/PROJECT/git-ratchet/witness",
+    remote_tags = ["latest"],
 )
