@@ -1,7 +1,7 @@
 # Deploying the git-ratchet witness
 
 This directory contains everything needed to deploy the git-ratchet witness
-to GCP Cloud Run via Bazel.
+to GCP Cloud Run via Bazel. Witness signing uses GCP Cloud KMS (Ed25519).
 
 ## Prerequisites
 
@@ -12,20 +12,9 @@ to GCP Cloud Run via Bazel.
   - Cloud Run Admin (`run.googleapis.com`)
   - Artifact Registry (`artifactregistry.googleapis.com`)
   - Cloud Storage (`storage.googleapis.com`)
+  - Cloud KMS (`cloudkms.googleapis.com`)
 
-## 1. Generate witness key
-
-```bash
-bazel run //deploy/witness:genkeys -- $PWD/deploy/witness
-```
-
-This creates `deploy/witness/witness-key` (git-ignored), the witness's
-Ed25519 cosigner private key.
-
-Separately, populate `deploy/witness/origins` (also git-ignored) with the
-vkeys of trusted log origins, one per line.
-
-## 2. Configure the GCP project
+## 1. Configure the GCP project
 
 Set your GCP project ID in two places:
 
@@ -53,14 +42,20 @@ Set your GCP project ID in two places:
    )
    ```
 
+## 2. Prepare trusted origins
+
+Populate `deploy/witness/origins` with the vkeys of trusted log origins,
+one per line. These are the origin keys that the witness will accept
+checkpoints from.
+
 ## 3. First deploy
 
-On the first deploy, both the Artifact Registry (for the container image) and
-the GCS bucket (for the witness key) must exist before Cloud Run can start.
-Bootstrap in this order:
+On the first deploy, the Artifact Registry, GCS bucket, and KMS key must
+exist before Cloud Run can start. Bootstrap in this order:
 
 ```bash
-# 1. Create everything except Cloud Run (registry + bucket must exist first).
+# 1. Create everything except Cloud Run (registry + bucket + KMS must exist first,
+#    and Terraform will upload the origins file to GCS automatically).
 bazel run //deploy/witness:witness.apply -- \
   -exclude=google_cloud_run_v2_service.witness \
   -exclude=google_cloud_run_v2_service_iam_member.public
@@ -69,19 +64,9 @@ bazel run //deploy/witness:witness.apply -- \
 gcloud auth configure-docker us-central1-docker.pkg.dev
 bazel run //witness:witness_push
 
-# 3. Upload the witness key and origins to GCS (the container reads these
-#    at startup via the GCS FUSE volume mount — they must exist before
-#    Cloud Run tries to start the service).
-bazel run //deploy/witness:upload_keys -- \
-  <PROJECT>-git-ratchet-witness \
-  deploy/witness/witness-key \
-  deploy/witness/origins
-
-# 4. Full apply — creates Cloud Run (container can now start successfully).
+# 3. Full apply — creates Cloud Run (container can now start successfully).
 bazel run //deploy/witness:witness.apply
 ```
-
-Replace `<PROJECT>` with your GCP project ID.
 
 > **Note:** Terraform state is stored locally (in `bazel-bin/`). For production,
 > add a `backend "gcs" {}` block to `main.tf`.
@@ -93,7 +78,30 @@ bazel run //witness:witness_push
 bazel run //deploy/witness:witness.apply
 ```
 
-## 4. Verify
+## 4. Extract the witness vkey
+
+After deployment, extract the witness's verifier key (vkey) from the KMS
+signing key. This vkey is what clients put in their policy files to verify
+cosignatures from this witness.
+
+```bash
+# Get the KMS key version resource name.
+KMS_KEY=$(gcloud kms keys versions list \
+  --project=PROJECT \
+  --location=us-central1 \
+  --keyring=git-ratchet-witness \
+  --key=witness-signing-key \
+  --filter="state=ENABLED" \
+  --format="value(name)" \
+  --limit=1)
+
+# Print the vkey.
+bazel run //tools/kmsvkey -- \
+  --kms-key="$KMS_KEY" \
+  --name=git-ratchet-witness
+```
+
+## 5. Verify
 
 After deployment, the witness URL is printed as a Terraform output. Test it:
 

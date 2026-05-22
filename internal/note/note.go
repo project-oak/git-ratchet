@@ -183,7 +183,10 @@ func Sign(body string, signer *Signer) (string, error) {
 
 	switch signer.SigType {
 	case Ed25519Origin:
-		sig = ed25519.Sign(signer.signer.(ed25519.PrivateKey), []byte(body))
+		sig, err = signer.signer.Sign(nil, []byte(body), crypto.Hash(0))
+		if err != nil {
+			return "", fmt.Errorf("Ed25519 sign: %w", err)
+		}
 	case MLDSA44:
 		sig, err = signer.signer.Sign(nil, []byte(body), &mldsa.Options{})
 		if err != nil {
@@ -232,7 +235,10 @@ func Cosign(signedNote string, signer *Signer) (string, error) {
 		cosignMsg := cosignatureV1Prefix + "\n" +
 			"time " + strconv.FormatUint(timestamp, 10) + "\n" +
 			body
-		sig = ed25519.Sign(signer.signer.(ed25519.PrivateKey), []byte(cosignMsg))
+		sig, err = signer.signer.Sign(nil, []byte(cosignMsg), crypto.Hash(0))
+		if err != nil {
+			return "", fmt.Errorf("Ed25519 cosign: %w", err)
+		}
 
 	case MLDSA44:
 		// Per tlog-cosignature, the signed message for ML-DSA-44 is
@@ -587,8 +593,3 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	return NewSigner(name, seed, sigType, role)
 }
 
-// WriteKeyFile writes a signer's key to a file in vkey + seed format.
-func WriteKeyFile(path string, s *Signer) error {
-	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
-	return os.WriteFile(path, []byte(content), 0600)
-}

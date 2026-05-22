@@ -35,6 +35,7 @@ type checkpointCmd struct {
 	ref        string
 	policyPath string
 	keyPath    string
+	kmsKey     string
 	repoDir    string
 }
 
@@ -47,6 +48,9 @@ func (*checkpointCmd) Usage() string {
   Signs a checkpoint for the ref, submits it to the witnesses in the policy
   file, collects cosignatures, and stores the cosigned checkpoint as a Git
   ref (refs/checkpoints/heads/<branch> or refs/checkpoints/tags/<tag>).
+
+  The origin key can be provided as a local key file (--key) or as a
+  GCP KMS key resource name (--kms-key).
 
   For branches (refs/heads/*), witnesses enforce a forward-only ratchet: the
   new commit must be a descendant of the previously witnessed commit.
@@ -61,14 +65,24 @@ func (*checkpointCmd) Usage() string {
 func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
-	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required)")
+	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required unless --kms-key is set)")
+	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if c.ref == "" || c.policyPath == "" || c.keyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and --key are required")
+	if c.ref == "" || c.policyPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and one of --key or --kms-key are required")
 		fmt.Fprint(os.Stderr, c.Usage())
+		return subcommands.ExitUsageError
+	}
+	if c.keyPath == "" && c.kmsKey == "" {
+		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and one of --key or --kms-key are required")
+		fmt.Fprint(os.Stderr, c.Usage())
+		return subcommands.ExitUsageError
+	}
+	if c.keyPath != "" && c.kmsKey != "" {
+		fmt.Fprintln(os.Stderr, "error: --key and --kms-key are mutually exclusive")
 		return subcommands.ExitUsageError
 	}
 
@@ -78,17 +92,22 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		return subcommands.ExitUsageError
 	}
 
-	// Load the origin signing key (algorithm detected from key file vkey).
-	signer, err := note.ReadKeyFile(c.keyPath, note.RoleOrigin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: loading key: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Load the policy.
+	// Load the policy first — we need pol.LogName for KMS signer identity.
 	pol, err := policy.Load(c.policyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Load the origin signing key.
+	var signer *note.Signer
+	if c.kmsKey != "" {
+		signer, err = note.NewKMSSigner(context.Background(), pol.LogName, c.kmsKey, note.RoleOrigin)
+	} else {
+		signer, err = note.ReadKeyFile(c.keyPath, note.RoleOrigin)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading key: %v\n", err)
 		return subcommands.ExitFailure
 	}
 

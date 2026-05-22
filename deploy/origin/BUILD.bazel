@@ -3,18 +3,17 @@ load("@rules_tofu//tf:defs.bzl", "tf_deploy", "tf_library")
 package(default_visibility = ["//visibility:public"])
 
 tf_library(
-    name = "witness_lib",
+    name = "origin_lib",
     srcs = [
         "main.tf",
         "variables.tf",
     ],
-    data = ["origins"],
     providers = ["@tf_providers_hashicorp_google//:provider"],
 )
 
 tf_deploy(
-    name = "witness",
-    deps = [":witness_lib"],
+    name = "origin",
+    deps = [":origin_lib"],
     vars = {
         "project": "PROJECT",
         "region": "us-central1",

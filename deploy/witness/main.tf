@@ -12,13 +12,19 @@ provider "google" {
   region  = var.region
 }
 
-# --- GCS bucket for witness state + keys ---
+# --- GCS bucket for witness state + origins ---
 
 resource "google_storage_bucket" "witness" {
   name                        = "${var.project}-git-ratchet-witness"
   location                    = var.region
   uniform_bucket_level_access = true
   force_destroy               = true
+}
+
+resource "google_storage_bucket_object" "origins" {
+  name   = "origins"
+  bucket = google_storage_bucket.witness.name
+  source = "${path.module}/origins"
 }
 
 # --- Artifact Registry for the witness container image ---
@@ -43,9 +49,34 @@ resource "google_storage_bucket_iam_member" "witness_bucket" {
   member = "serviceAccount:${google_service_account.witness.email}"
 }
 
+resource "google_kms_crypto_key_iam_member" "witness_signer" {
+  crypto_key_id = google_kms_crypto_key.witness.id
+  role          = "roles/cloudkms.signerVerifier"
+  member        = "serviceAccount:${google_service_account.witness.email}"
+}
+
+# --- KMS key ring and signing key ---
+
+resource "google_kms_key_ring" "witness" {
+  name     = "git-ratchet-witness"
+  location = var.region
+}
+
+resource "google_kms_crypto_key" "witness" {
+  name     = "witness-signing-key"
+  key_ring = google_kms_key_ring.witness.id
+  purpose  = "ASYMMETRIC_SIGN"
+
+  version_template {
+    algorithm        = "EC_SIGN_ED25519"
+    protection_level = "SOFTWARE"
+  }
+}
+
 # --- Cloud Run service ---
 
 resource "google_cloud_run_v2_service" "witness" {
+  depends_on = [google_storage_bucket_object.origins]
   name                = "git-ratchet-witness"
   location            = var.region
   deletion_protection = false
@@ -71,7 +102,8 @@ resource "google_cloud_run_v2_service" "witness" {
 
       args = [
         "--addr=:8080",
-        "--key=/data/witness-key",
+        "--kms-key=${google_kms_crypto_key.witness.id}/cryptoKeyVersions/1",
+        "--name=${var.witness_name}",
         "--origins-file=/data/origins",
         "--state-file=/data/witness-state.json",
       ]
@@ -113,4 +145,9 @@ output "bucket_name" {
 output "registry" {
   description = "The Artifact Registry repository path."
   value       = "${var.region}-docker.pkg.dev/${var.project}/${google_artifact_registry_repository.witness.repository_id}"
+}
+
+output "kms_key" {
+  description = "The KMS CryptoKeyVersion resource name for the witness signing key."
+  value       = "${google_kms_crypto_key.witness.id}/cryptoKeyVersions/1"
 }

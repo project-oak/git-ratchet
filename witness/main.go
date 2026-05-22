@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
@@ -35,7 +36,9 @@ type Server struct {
 
 var (
 	addr        = flag.String("addr", ":8080", "Address to listen on")
-	keyPath     = flag.String("key", "", "Path to witness private key file (required)")
+	keyPath     = flag.String("key", "", "Path to witness private key file (required unless --kms-key is set)")
+	kmsKeyFlag  = flag.String("kms-key", "", "GCP KMS key resource name for remote cosigning (alternative to --key)")
+	witnessName = flag.String("name", "", "Witness signer name (required with --kms-key; ignored with --key)")
 	originsFlag = flag.String("origins", "", "Comma-separated list of trusted origin verifier keys (vkeys)")
 	originsFile = flag.String("origins-file", "", "Path to file containing trusted origin verifier keys (one per line)")
 	stateFile   = flag.String("state-file", "", "Path to JSON file to persist witness state")
@@ -44,14 +47,29 @@ var (
 func main() {
 	flag.Parse()
 
-	if *keyPath == "" {
-		log.Fatalf("error: --key is required")
+	if *keyPath == "" && *kmsKeyFlag == "" {
+		log.Fatalf("error: one of --key or --kms-key is required")
+	}
+	if *keyPath != "" && *kmsKeyFlag != "" {
+		log.Fatalf("error: --key and --kms-key are mutually exclusive")
 	}
 
 	// Read witness signer key (cosigner role).
-	wSigner, err := note.ReadKeyFile(*keyPath, note.RoleCosigner)
-	if err != nil {
-		log.Fatalf("failed to read witness key: %v", err)
+	var wSigner *note.Signer
+	var err error
+	if *kmsKeyFlag != "" {
+		if *witnessName == "" {
+			log.Fatalf("error: --name is required when using --kms-key")
+		}
+		wSigner, err = note.NewKMSSigner(context.Background(), *witnessName, *kmsKeyFlag, note.RoleCosigner)
+		if err != nil {
+			log.Fatalf("failed to create KMS signer: %v", err)
+		}
+	} else {
+		wSigner, err = note.ReadKeyFile(*keyPath, note.RoleCosigner)
+		if err != nil {
+			log.Fatalf("failed to read witness key: %v", err)
+		}
 	}
 
 	// Accumulate trusted origins.

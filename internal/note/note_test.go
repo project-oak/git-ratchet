@@ -11,6 +11,19 @@ import (
 	"filippo.io/mldsa"
 )
 
+// writeKeyFile is a test helper that writes a signer's key to a file
+// in vkey + seed format.
+func writeKeyFile(t *testing.T, path string, s *Signer) {
+	t.Helper()
+	if s.seed == nil {
+		t.Fatal("cannot write key file for KMS-backed signer (no local seed)")
+	}
+	content := s.VKey() + "\n" + base64.StdEncoding.EncodeToString(s.Seed()) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEd25519SignVerify(t *testing.T) {
 	s, err := GenerateKey("test-origin", Ed25519Origin, RoleOrigin)
 	if err != nil {
@@ -208,9 +221,7 @@ func TestKeyFileRoundTrip(t *testing.T) {
 
 			dir := t.TempDir()
 			path := filepath.Join(dir, "key")
-			if err := WriteKeyFile(path, s); err != nil {
-				t.Fatal(err)
-			}
+			writeKeyFile(t, path, s)
 
 			// Read back.
 			s2, err := ReadKeyFile(path, tc.role)
@@ -347,9 +358,7 @@ func TestWriteKeyFilePermissions(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "key")
-	if err := WriteKeyFile(path, s); err != nil {
-		t.Fatal(err)
-	}
+	writeKeyFile(t, path, s)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -367,9 +376,7 @@ func TestKeyFileContent(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "key")
-	if err := WriteKeyFile(path, s); err != nil {
-		t.Fatal(err)
-	}
+	writeKeyFile(t, path, s)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

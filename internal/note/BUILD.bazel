@@ -2,10 +2,18 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "note",
-    srcs = ["note.go"],
+    srcs = [
+        "kms.go",
+        "note.go",
+    ],
     importpath = "github.com/BenBirt/git-ratchet/internal/note",
     visibility = ["//:__subpackages__"],
-    deps = ["@io_filippo_mldsa//:mldsa"],
+    deps = [
+        "@com_google_cloud_go_kms//apiv1",
+        "@com_google_cloud_go_kms//apiv1/kmspb",
+        "@io_filippo_mldsa//:mldsa",
+        "@org_golang_google_protobuf//types/known/wrapperspb",
+    ],
 )
 
 go_test(

@@ -1,8 +1,1 @@
 /bazel-*
-
-# Witness deployment keys (secret material — do not commit).
-/deploy/witness/witness-key
-/deploy/witness/origins
-
-# Origin deployment key (secret material - do not commit).
-/origin-key
