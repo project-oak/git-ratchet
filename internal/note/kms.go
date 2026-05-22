@@ -18,6 +18,9 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+// crc32cTable is the CRC32C (Castagnoli) table required by GCP KMS integrity checks.
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
 // kmsSigner implements crypto.Signer using a GCP Cloud KMS Ed25519 key.
 type kmsSigner struct {
 	client       *kms.KeyManagementClient
@@ -34,7 +37,7 @@ func (s *kmsSigner) Public() crypto.PublicKey {
 // For Ed25519, KMS performs the hashing internally, so digest should contain
 // the full message data (not a pre-computed hash). The opts parameter is ignored.
 func (s *kmsSigner) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) ([]byte, error) {
-	crc := crc32.ChecksumIEEE(digest)
+	crc := crc32.Checksum(digest, crc32cTable)
 
 	req := &kmspb.AsymmetricSignRequest{
 		Name:       s.resourceName,
@@ -52,7 +55,7 @@ func (s *kmsSigner) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) ([]byt
 	if !resp.VerifiedDataCrc32C {
 		return nil, fmt.Errorf("KMS AsymmetricSign: request corrupted in transit")
 	}
-	respCRC := crc32.ChecksumIEEE(resp.Signature)
+	respCRC := crc32.Checksum(resp.Signature, crc32cTable)
 	if int64(respCRC) != resp.SignatureCrc32C.Value {
 		return nil, fmt.Errorf("KMS AsymmetricSign: response corrupted in transit")
 	}

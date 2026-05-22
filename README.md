@@ -86,3 +86,96 @@ Requires [Bazel](https://bazel.build/) 9.1+:
 ```
 bazel build //:git-ratchet
 ```
+
+## Demo
+
+This section walks through the full end-to-end setup: provisioning an origin signing key, deploying a witness, writing a policy, and then checkpointing, verifying, and auditing a repository.
+
+### 1. Provision an origin signing key
+
+Follow [deploy/origin/README.md](deploy/origin/README.md) to create a GCP Cloud KMS Ed25519 signing key for your origin. At the end you will have:
+
+- A `--kms-key` resource name to pass to `git-ratchet checkpoint`.
+- An **origin vkey** printed by `kmsvkey` — a string of the form `git-ratchet-origin+<keyid>+<base64pubkey>`. Keep this; you'll need it in the policy.
+
+### 2. Deploy a witness
+
+Follow [deploy/witness/README.md](deploy/witness/README.md) to deploy the witness to GCP Cloud Run. At the end you will have:
+
+- A **witness URL** (e.g. `https://git-ratchet-witness-<hash>-uc.a.run.app`).
+- A **witness vkey** printed by `kmsvkey` — a string of the form `git-ratchet-witness+<keyid>+<base64pubkey>`.
+
+### 3. Write a policy file
+
+Create a `policy.txt` (not committed) that ties together the origin vkey, the protected refs, and the witness:
+
+```
+log <origin-vkey>
+
+ref refs/heads/main
+
+witness w1 <witness-url> <witness-vkey>
+
+quorum w1
+```
+
+For example:
+
+```
+log git-ratchet-origin+a1b2c3d4+AAAA...
+
+ref refs/heads/main
+ref refs/tags/v*
+
+witness w1 https://git-ratchet-witness-xxxxxxxx-uc.a.run.app git-ratchet-witness+e5f6a7b8+BBBB...
+
+quorum w1
+```
+
+See [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full policy format.
+
+### 4. Checkpoint, verify, and audit
+
+You can either build the binary once and run it directly, or use `bazel run` to build-and-run in a single step.
+
+**Checkpoint** a branch (after a push):
+
+```bash
+bazel run //:git-ratchet -- checkpoint \
+  --ref refs/heads/main \
+  --kms-key "$KMS_KEY" \
+  --policy $PWD/policy.txt
+```
+
+To inspect the stored checkpoint:
+
+```bash
+git cat-file -p refs/checkpoints/heads/main
+```
+
+**Verify** that all refs in the policy still match their witnessed checkpoints:
+
+```bash
+bazel run //:git-ratchet -- verify --policy $PWD/policy.txt
+```
+
+Or verify a single ref:
+
+```bash
+bazel run //:git-ratchet -- verify --policy $PWD/policy.txt --ref refs/heads/main
+```
+
+**Audit** the full repository integrity (fsck + verify + replace-ref check):
+
+```bash
+bazel run //:git-ratchet -- audit --policy $PWD/policy.txt
+```
+
+Alternatively, build the binary once and invoke it directly:
+
+```bash
+bazel build //:git-ratchet
+./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --policy $PWD/policy.txt
+./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt
+./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt
+```
