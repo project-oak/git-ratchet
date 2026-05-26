@@ -2,7 +2,8 @@
 
 This document specifies the policy file format used by git-ratchet to verify Git ref checkpoints. The format extends the C2SP [tlog-policy][] specification with a `ref` directive for enumerating protected Git refs.
 
-[tlog-policy]: https://github.com/C2SP/C2SP/blob/main/tlog-policy.md
+<!-- TODO: update tlog-policy link once https://github.com/C2SP/C2SP/pull/233 is merged -->
+[tlog-policy]: https://github.com/C2SP/C2SP/pull/233
 [signed-note]: https://c2sp.org/signed-note@v1.0.0
 [checkpoint]: git-checkpoint.md
 
@@ -20,7 +21,7 @@ A git-ratchet checkpoint policy specifies the trust configuration for verifying 
 
 A policy file has two distinct consumers:
 
-- **Checkpointers** use the policy to discover witness endpoints and the required quorum. The checkpointer selects which ref to checkpoint via the `--ref` CLI flag; `ref` directives in the policy are not consulted.
+- **Log origins** use the policy when creating a checkpoint to discover witness endpoints and the required quorum. The ref to checkpoint is selected via the `--ref` CLI flag; `ref` directives in the policy are not consulted.
 - **Verifiers** use the policy to verify checkpoint signatures and, when `ref` directives are present, to enumerate the full set of refs that must pass verification.
 
 ## Base format
@@ -58,7 +59,7 @@ The `ref` directive MAY appear anywhere in the policy file relative to other dir
 
 ### Semantics
 
-The `ref` directive has no effect on checkpointing. When a checkpointer creates a checkpoint, the ref is determined by the `--ref` CLI flag; `ref` directives in the policy are ignored.
+The `ref` directive has no effect on checkpointing. When the origin creates a checkpoint, the ref is determined by the `--ref` CLI flag; `ref` directives in the policy are ignored.
 
 For verification, `ref` directives define the complete set of refs that the verifier considers protected:
 
@@ -88,7 +89,7 @@ group all-witnesses all w1 w2
 quorum all-witnesses
 ```
 
-A checkpointer policy for the same repository (no `ref` directives needed):
+A policy used by the origin when checkpointing (no `ref` directives needed):
 
 ```
 log example-origin+a1b2c3d4+<base64 public key>
