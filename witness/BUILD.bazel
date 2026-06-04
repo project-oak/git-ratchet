@@ -24,12 +24,32 @@ go_library(
     deps = [
         "//internal/gitutil",
         "//internal/note",
+        "//internal/witness",
     ],
 )
 
 go_binary(
     name = "witness",
     embed = [":witness_lib"],
+    pure = "on",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "cosign_lib",
+    srcs = ["cosign.go"],
+    importpath = "github.com/BenBirt/git-ratchet/witness/cosign",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//internal/gitutil",
+        "//internal/note",
+        "//internal/witness",
+    ],
+)
+
+go_binary(
+    name = "cosign",
+    embed = [":cosign_lib"],
     pure = "on",
     visibility = ["//visibility:public"],
 )
