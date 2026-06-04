@@ -47,6 +47,33 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [flags]
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
+Witnesses with non-HTTP endpoints (e.g. `github-issue://`) are skipped with a warning. Use the decomposed workflow below for those witnesses.
+
+### `git-ratchet checkpoint-request`
+
+```
+git-ratchet checkpoint-request \
+    --ref <refpath> \
+    --key <path> \
+    --output-request <path> \
+    --output-note <path> \
+    [--origin <name>] [flags]
+```
+
+Produces the add-checkpoint request body (ancestry proof + signed note) without contacting any witnesses. The output can later be submitted to witnesses out-of-band. The origin identity is derived from the key file; use `--origin` to override (required when using `--kms-key`).
+
+### `git-ratchet checkpoint-store`
+
+```
+git-ratchet checkpoint-store \
+    --ref <refpath> \
+    --policy <path> \
+    --note <path> \
+    [--cosig <path>]... [flags]
+```
+
+Assembles a cosigned checkpoint from the signed note (produced by `checkpoint-request`) and one or more cosignature files (collected out-of-band), verifies the result against the policy, and stores it. The `--cosig` flag can be repeated for each witness cosignature.
+
 ### `git-ratchet verify`
 
 ```
@@ -66,6 +93,44 @@ Runs a comprehensive end-to-end integrity scan combining three checks:
 1. **`git fsck`**: Walks the full object database and verifies that every object's content matches its hash, all referenced objects exist, and the DAG is well-formed.
 2. **`git-ratchet verify`**: Verifies all checkpoint refs against the witness policy.
 3. **Replace ref rejection**: Errors if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on. Since replace refs are not fetched by default, their presence is treated as an integrity violation.
+
+### `witness-cosign` (standalone binary)
+
+```
+witness-cosign \
+    --request <path> \
+    --origin-vkeys <path> \
+    --key <path> \
+    [--stored-checkpoint <path>]
+```
+
+A standalone witness binary (built via `bazel build //witness:cosign`) that reads an add-checkpoint request from a file, verifies the origin signature and ancestry proof, and writes the cosignature line to stdout. This is the offline counterpart to the HTTP witness server — it performs the same verification but reads from files instead of receiving HTTP requests.
+
+### Decomposed workflow
+
+The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. GitHub Issues), use the decomposed workflow:
+
+```bash
+# 1. Produce the request and signed note
+git-ratchet checkpoint-request \
+    --ref refs/heads/main \
+    --key origin-key.pem \
+    --output-request request.txt \
+    --output-note note.txt
+
+# 2. Submit to each witness (e.g. via the standalone cosign binary)
+witness-cosign \
+    --request request.txt \
+    --origin-vkeys origins.txt \
+    --key witness-key.pem > cosig1.txt
+
+# 3. Assemble and store the cosigned checkpoint
+git-ratchet checkpoint-store \
+    --ref refs/heads/main \
+    --policy policy.txt \
+    --note note.txt \
+    --cosig cosig1.txt
+```
 
 See `git-ratchet <command> --help` for details.
 
@@ -88,6 +153,7 @@ Requires [Bazel](https://bazel.build/) 9.1+:
 
 ```
 bazel build //:git-ratchet
+bazel build //witness:cosign
 ```
 
 ## Demo
