@@ -19,7 +19,6 @@ import (
 	"bufio"
 	"context"
 	"crypto"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/BenBirt/git-ratchet/internal/gitutil"
 	"github.com/BenBirt/git-ratchet/internal/note"
+	iwitness "github.com/BenBirt/git-ratchet/internal/witness"
 )
 
 // trustedOrigin holds a trusted origin's public key and signature type.
@@ -144,22 +144,11 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	bodyStr := string(bodyBytes)
 
 	// Split body into ancestry proof and signed note.
-	lines := strings.Split(bodyStr, "\n")
-	var ancestry []string
-	var signedNote string
-	emptyLineIdx := -1
-	for i, line := range lines {
-		if line == "" {
-			emptyLineIdx = i
-			break
-		}
-		ancestry = append(ancestry, line)
-	}
-	if emptyLineIdx < 0 {
-		http.Error(w, "malformed request: missing empty line separator", http.StatusBadRequest)
+	ancestry, signedNote, err := iwitness.ParseAddCheckpointRequest(bodyStr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	signedNote = strings.Join(lines[emptyLineIdx+1:], "\n")
 
 	// Parse checkpoint signed note.
 	noteBody, sigLines, err := note.ParseSignedNote(signedNote)
@@ -193,20 +182,13 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse checkpoint body: "<origin> <ref>\n<commit-hash>\n"
-	bodyLines := strings.Split(strings.TrimSpace(noteBody), "\n")
-	if len(bodyLines) < 2 {
-		http.Error(w, "malformed checkpoint body", http.StatusBadRequest)
+	// Parse checkpoint body.
+	cpOrigin, ref, newCommit, err := iwitness.ParseCheckpointBody(noteBody)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	refParts := strings.Fields(bodyLines[0])
-	if len(refParts) != 2 {
-		http.Error(w, "malformed ref line in checkpoint body", http.StatusBadRequest)
-		return
-	}
-	ref := refParts[1]
-	stateKey := refParts[0] + " " + ref
-	newCommit := strings.TrimSpace(bodyLines[1])
+	stateKey := cpOrigin + " " + ref
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,56 +210,8 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Branch ratchet: ancestry verification required.
-		commitMap := make(map[string]string)
-		for _, b64Obj := range ancestry {
-			decoded, err := base64.StdEncoding.DecodeString(b64Obj)
-			if err != nil {
-				http.Error(w, "malformed base64 encoding in ancestry proof", http.StatusUnprocessableEntity)
-				return
-			}
-			commitID, err := gitutil.CommitHash(decoded, len(newCommit))
-			if err != nil {
-				http.Error(w, fmt.Sprintf("invalid commit object in ancestry proof: %v", err), http.StatusUnprocessableEntity)
-				return
-			}
-			s := string(decoded)
-			idx := strings.IndexByte(s, '\n')
-			if idx >= 0 {
-				commitMap[commitID] = s[idx+1:]
-			}
-		}
-
-		// Traverse ancestry DAG backward from newCommit to storedCommit.
-		queue := []string{newCommit}
-		visited := map[string]bool{newCommit: true}
-		found := false
-
-		for len(queue) > 0 {
-			curr := queue[0]
-			queue = queue[1:]
-
-			if curr == storedCommit {
-				found = true
-				break
-			}
-
-			content, ok := commitMap[curr]
-			if !ok {
-				// Parent commit content not in the ancestry proof.
-				continue
-			}
-
-			parents := parseParents(content)
-			for _, p := range parents {
-				if !visited[p] {
-					visited[p] = true
-					queue = append(queue, p)
-				}
-			}
-		}
-
-		if !found {
-			http.Error(w, "ancestry verification failed: new commit does not descend from stored commit", http.StatusUnprocessableEntity)
+		if err := iwitness.VerifyAncestry(ancestry, storedCommit, newCommit, len(newCommit)); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 	}
@@ -303,16 +237,6 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, cosigLine)
-}
-
-func parseParents(content string) []string {
-	var parents []string
-	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(line, "parent ") {
-			parents = append(parents, strings.TrimPrefix(line, "parent "))
-		}
-	}
-	return parents
 }
 
 func (s *Server) loadState() error {

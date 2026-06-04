@@ -12,11 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "witness",
-    srcs = ["client.go"],
+    srcs = [
+        "client.go",
+        "verify.go",
+    ],
     importpath = "github.com/BenBirt/git-ratchet/internal/witness",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/gitutil"],
+)
+
+go_test(
+    name = "witness_test",
+    srcs = ["verify_test.go"],
+    embed = [":witness"],
 )
