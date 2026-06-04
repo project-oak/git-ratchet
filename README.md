@@ -1,6 +1,8 @@
 # git-ratchet
 
-Rollback-resistant Git ref checkpointing.
+Protect your releases and branch history from silent rollback, force-push, and tag tampering — with cryptographic proof that anyone can verify.
+
+By [Ben Birt](https://github.com/benbirt) · Licensed under the [Apache License 2.0](LICENSE)
 
 git-ratchet creates **witnessed checkpoints** for Git branches and tags, ensuring that branch history can only move forward and that tags remain immutable. Independent witnesses cosign checkpoints, making silent rollback (via force-push, reset, or rebase) and tag tampering detectable and — with a quorum of witnesses — effectively impossible.
 
@@ -180,3 +182,9 @@ bazel build //:git-ratchet
 ./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt
 ./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt
 ```
+
+## Disclaimer
+
+This is not an officially supported Google product. This project is not
+eligible for the [Google Open Source Software Vulnerability Rewards
+Program](https://bughunters.google.com/open-source-security).
