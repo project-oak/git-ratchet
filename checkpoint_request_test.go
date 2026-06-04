@@ -55,15 +55,11 @@ func TestCheckpointRequestBranchBasic(t *testing.T) {
 	binary := mustFindBinary(t)
 
 	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
-	// We need a witness key for the policy file, even though checkpoint-request
-	// does not contact witnesses.
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "initial commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
 
 	requestFile := filepath.Join(t.TempDir(), "request.txt")
 	noteFile := filepath.Join(t.TempDir(), "note.txt")
@@ -73,7 +69,6 @@ func TestCheckpointRequestBranchBasic(t *testing.T) {
 		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
-		"--policy", policyPath,
 		"--output-request", requestFile,
 		"--output-note", noteFile,
 	).CombinedOutput()
@@ -128,26 +123,33 @@ func TestCheckpointRequestTagNoAncestry(t *testing.T) {
 	binary := mustFindBinary(t)
 
 	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	commitHash := makeCommit(t, repoDir, "tagged release")
 	run(t, repoDir, "git", "tag", "v1.0.0")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+
+	requestFile := filepath.Join(t.TempDir(), "request.txt")
+	noteFile := filepath.Join(t.TempDir(), "note.txt")
 
 	out, err := exec.Command(binary,
 		"checkpoint-request",
 		"--ref", "refs/tags/v1.0.0",
 		"--repo", repoDir,
 		"--key", keyPath,
-		"--policy", policyPath,
+		"--output-request", requestFile,
+		"--output-note", noteFile,
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("checkpoint-request failed: %v\n%s", err, out)
 	}
-	request := string(out)
+
+	reqBytes, err := os.ReadFile(requestFile)
+	if err != nil {
+		t.Fatalf("reading request file: %v", err)
+	}
+	request := string(reqBytes)
 
 	// For tags, there is no ancestry proof.
 	ancestrySection, signedNote := splitWireFormat(t, request)
@@ -167,54 +169,21 @@ func TestCheckpointRequestTagNoAncestry(t *testing.T) {
 	}
 }
 
-// TestCheckpointRequestStdout verifies that when no --output-request or
-// --output-note flags are given, the wire format is written to stdout.
-func TestCheckpointRequestStdout(t *testing.T) {
-	binary := mustFindBinary(t)
-
-	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
-
-	repoDir := initTestRepo(t)
-	_ = makeCommit(t, repoDir, "initial commit")
-
-	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
-
-	out, err := exec.Command(binary,
-		"checkpoint-request",
-		"--ref", "refs/heads/main",
-		"--repo", repoDir,
-		"--key", keyPath,
-		"--policy", policyPath,
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("checkpoint-request failed: %v\n%s", err, out)
-	}
-
-	request := string(out)
-	_, signedNote := splitWireFormat(t, request)
-
-	// Verify the note can be parsed.
-	_, _, err = note.ParseSignedNote(signedNote)
-	if err != nil {
-		t.Fatalf("parsing signed note from stdout: %v", err)
-	}
-}
-
 // TestCheckpointRequestMissingFlags verifies that missing required flags
 // produce a usage error.
 func TestCheckpointRequestMissingFlags(t *testing.T) {
 	binary := mustFindBinary(t)
 
 	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
-	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
 
 	repoDir := initTestRepo(t)
 	_ = makeCommit(t, repoDir, "initial commit")
 
 	keyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, "http://unused")
+
+	tmpDir := t.TempDir()
+	reqFile := filepath.Join(tmpDir, "req.txt")
+	noteFile := filepath.Join(tmpDir, "note.txt")
 
 	tests := []struct {
 		name string
@@ -222,19 +191,23 @@ func TestCheckpointRequestMissingFlags(t *testing.T) {
 	}{
 		{
 			name: "missing --ref",
-			args: []string{"checkpoint-request", "--policy", policyPath, "--key", keyPath, "--repo", repoDir},
+			args: []string{"checkpoint-request", "--key", keyPath, "--repo", repoDir, "--output-request", reqFile, "--output-note", noteFile},
 		},
 		{
-			name: "missing --policy",
-			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--key", keyPath, "--repo", repoDir},
+			name: "missing --output-request",
+			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--key", keyPath, "--repo", repoDir, "--output-note", noteFile},
+		},
+		{
+			name: "missing --output-note",
+			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--key", keyPath, "--repo", repoDir, "--output-request", reqFile},
 		},
 		{
 			name: "missing --key and --kms-key",
-			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--policy", policyPath, "--repo", repoDir},
+			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--repo", repoDir, "--output-request", reqFile, "--output-note", noteFile},
 		},
 		{
 			name: "both --key and --kms-key",
-			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--policy", policyPath, "--key", keyPath, "--kms-key", "projects/x/locations/y/keyRings/z/cryptoKeys/k/cryptoKeyVersions/1", "--repo", repoDir},
+			args: []string{"checkpoint-request", "--ref", "refs/heads/main", "--key", keyPath, "--kms-key", "projects/x/locations/y/keyRings/z/cryptoKeys/k/cryptoKeyVersions/1", "--repo", repoDir, "--output-request", reqFile, "--output-note", noteFile},
 		},
 	}
 
@@ -285,13 +258,14 @@ func TestCheckpointRequestWithAncestry(t *testing.T) {
 
 	// Now run checkpoint-request — it should include ancestry proof.
 	requestFile := filepath.Join(t.TempDir(), "request.txt")
+	noteFile := filepath.Join(t.TempDir(), "note.txt")
 	out, err = exec.Command(binary,
 		"checkpoint-request",
 		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--key", keyPath,
-		"--policy", policyPath,
 		"--output-request", requestFile,
+		"--output-note", noteFile,
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("checkpoint-request failed: %v\n%s", err, out)
