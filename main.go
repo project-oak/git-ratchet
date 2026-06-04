@@ -37,6 +37,7 @@ func main() {
 	subcommands.Register(subcommands.CommandsCommand(), "")
 
 	subcommands.Register(&checkpointCmd{}, "")
+	subcommands.Register(&checkpointStoreCmd{}, "")
 	subcommands.Register(&verifyCmd{}, "")
 	subcommands.Register(&auditCmd{}, "")
 
@@ -175,6 +176,11 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		go func(w *policy.Witness) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			// Skip witnesses with non-HTTP endpoints.
+			if w.Endpoint != "" && !strings.HasPrefix(w.Endpoint, "http://") && !strings.HasPrefix(w.Endpoint, "https://") {
+				ch <- cosigResult{w.PolicyName, "", fmt.Errorf("unsupported witness transport %q (use checkpoint-request + checkpoint-store for non-HTTP witnesses)", w.Endpoint)}
+				return
+			}
 			line, err := witness.Cosign(ctx, w.Endpoint, ancestry, signed)
 			ch <- cosigResult{w.PolicyName, line, err}
 		}(w)
@@ -209,6 +215,105 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 
 	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
 	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, cosigned)
+	return subcommands.ExitSuccess
+}
+
+// stringSlice is a flag.Value that collects repeated --cosig flags.
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+func (s *stringSlice) Get() any { return []string(*s) }
+
+type checkpointStoreCmd struct {
+	ref        string
+	policyPath string
+	notePath   string
+	cosigPaths stringSlice
+	repoDir    string
+}
+
+func (*checkpointStoreCmd) Name() string     { return "checkpoint-store" }
+func (*checkpointStoreCmd) Synopsis() string { return "Assemble and store a cosigned checkpoint from files" }
+func (*checkpointStoreCmd) Usage() string {
+	return `checkpoint-store [flags]:
+  Assemble a cosigned checkpoint from a signed note and cosignature files.
+
+  Reads the signed note produced by checkpoint-request, appends each cosignature
+  from the --cosig files, verifies the assembled checkpoint against the policy,
+  and stores it as a Git ref.
+
+  This command is intended for non-HTTP witnesses (e.g. github-issue://) where
+  cosignatures are collected out-of-band.
+
+`
+}
+
+func (c *checkpointStoreCmd) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
+	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
+	f.StringVar(&c.notePath, "note", "", "Path to the signed note file (required)")
+	f.Var(&c.cosigPaths, "cosig", "Path to a cosignature file (repeatable)")
+	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+}
+
+func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if c.ref == "" || c.policyPath == "" || c.notePath == "" {
+		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and --note are required")
+		fmt.Fprint(os.Stderr, c.Usage())
+		return subcommands.ExitUsageError
+	}
+
+	if _, err := gitutil.ParseRefKind(c.ref); err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+
+	// Read the signed note.
+	noteData, err := os.ReadFile(c.notePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: reading note file: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	signed := string(noteData)
+
+	// Read and append each cosignature.
+	for _, cosigPath := range c.cosigPaths {
+		cosigData, err := os.ReadFile(cosigPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: reading cosignature file %s: %v\n", cosigPath, err)
+			return subcommands.ExitFailure
+		}
+		cosigLine := strings.TrimSpace(string(cosigData))
+		signed = note.AppendSignature(signed, cosigLine)
+	}
+
+	// Parse the assembled checkpoint.
+	assembledBody, assembledSigLines, err := note.ParseSignedNote(signed)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: parsing assembled checkpoint: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Load the policy and verify.
+	pol, err := policy.Load(c.policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
+		fmt.Fprintf(os.Stderr, "error: quorum not satisfied: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Store the checkpoint as a git ref.
+	if err := gitutil.StoreCheckpoint(c.repoDir, c.ref, signed); err != nil {
+		fmt.Fprintf(os.Stderr, "error: storing checkpoint: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
+	fmt.Printf("checkpoint stored at %s (%d cosignatures assembled)\n", cpRef, len(c.cosigPaths))
 	return subcommands.ExitSuccess
 }
 
