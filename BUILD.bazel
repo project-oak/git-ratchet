@@ -38,8 +38,11 @@ go_binary(
 )
 
 go_test(
-    name = "checkpoint_test",
-    srcs = ["checkpoint_test.go"],
+    name = "command_test",
+    srcs = [
+        "checkpoint_test.go",
+        "checkpoint_request_test.go",
+    ],
     data = [":git-ratchet"],
     deps = [
         "//internal/gitutil",

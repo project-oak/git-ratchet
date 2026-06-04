@@ -37,6 +37,7 @@ func main() {
 	subcommands.Register(subcommands.CommandsCommand(), "")
 
 	subcommands.Register(&checkpointCmd{}, "")
+	subcommands.Register(&checkpointRequestCmd{}, "")
 	subcommands.Register(&verifyCmd{}, "")
 	subcommands.Register(&auditCmd{}, "")
 
@@ -209,6 +210,138 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 
 	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
 	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, cosigned)
+	return subcommands.ExitSuccess
+}
+
+type checkpointRequestCmd struct {
+	ref           string
+	origin        string
+	keyPath       string
+	kmsKey        string
+	repoDir       string
+	outputRequest string
+	outputNote    string
+}
+
+func (*checkpointRequestCmd) Name() string { return "checkpoint-request" }
+func (*checkpointRequestCmd) Synopsis() string {
+	return "Produce an add-checkpoint request body without contacting witnesses"
+}
+func (*checkpointRequestCmd) Usage() string {
+	return `checkpoint-request [flags]:
+  Produce the add-checkpoint request body (ancestry proof + signed
+  checkpoint note) without contacting any witnesses.
+
+  The output can later be submitted to witnesses separately.
+`
+}
+
+func (c *checkpointRequestCmd) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
+	f.StringVar(&c.origin, "origin", "", "Origin identity for the checkpoint (required for --kms-key, derived from --key if omitted)")
+	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required unless --kms-key is set)")
+	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
+	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+	f.StringVar(&c.outputRequest, "output-request", "", "Write the full add-checkpoint wire format to this file (required)")
+	f.StringVar(&c.outputNote, "output-note", "", "Write just the signed note to this file (required)")
+}
+
+func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if c.ref == "" || c.outputRequest == "" || c.outputNote == "" || (c.keyPath == "" && c.kmsKey == "") {
+		fmt.Fprintln(os.Stderr, "error: --ref, --output-request, --output-note, and one of --key or --kms-key are required")
+		fmt.Fprint(os.Stderr, c.Usage())
+		return subcommands.ExitUsageError
+	}
+	if c.keyPath != "" && c.kmsKey != "" {
+		fmt.Fprintln(os.Stderr, "error: --key and --kms-key are mutually exclusive")
+		return subcommands.ExitUsageError
+	}
+
+	kind, err := gitutil.ParseRefKind(c.ref)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+
+	if c.kmsKey != "" && c.origin == "" {
+		fmt.Fprintln(os.Stderr, "error: --origin is required when using --kms-key")
+		return subcommands.ExitUsageError
+	}
+
+	// Load the origin signing key.
+	var signer *note.Signer
+	if c.kmsKey != "" {
+		signer, err = note.NewKMSSigner(context.Background(), c.origin, c.kmsKey, note.RoleOrigin)
+	} else {
+		signer, err = note.ReadKeyFile(c.keyPath, note.RoleOrigin)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading key: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Use the origin name from the flag, or derive from the key.
+	origin := c.origin
+	if origin == "" {
+		origin = signer.Name
+	}
+
+	// Resolve commit hash from the ref.
+	commit, err := gitutil.ResolveRef(c.repoDir, c.ref)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: resolving ref: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Build the checkpoint body.
+	body := origin + " " + c.ref + "\n" + commit + "\n"
+
+	// Sign the checkpoint.
+	signed, err := note.Sign(body, signer)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: signing checkpoint: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
+	// Build ancestry proof (branches only; tags don't need one).
+	var ancestry []string
+	if kind == gitutil.RefBranch {
+		if oldCheckpoint, err := gitutil.ReadCheckpoint(c.repoDir, c.ref); err == nil {
+			oldBody, err := note.ExtractBody(oldCheckpoint)
+			if err == nil {
+				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
+				if len(lines) >= 2 {
+					oldCommit := strings.TrimSpace(lines[1])
+					ancestry, err = gitutil.GetCommitChain(c.repoDir, oldCommit, commit)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error: generating ancestry proof: %v\n", err)
+						return subcommands.ExitFailure
+					}
+				}
+			}
+		}
+	}
+
+	// Assemble wire-format request: ancestry lines, empty line, signed note.
+	var wireFormat strings.Builder
+	for _, line := range ancestry {
+		wireFormat.WriteString(line)
+		wireFormat.WriteString("\n")
+	}
+	wireFormat.WriteString("\n")
+	wireFormat.WriteString(signed)
+	request := wireFormat.String()
+
+	// Write outputs.
+	if err := os.WriteFile(c.outputRequest, []byte(request), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error: writing request to %s: %v\n", c.outputRequest, err)
+		return subcommands.ExitFailure
+	}
+	if err := os.WriteFile(c.outputNote, []byte(signed), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error: writing note to %s: %v\n", c.outputNote, err)
+		return subcommands.ExitFailure
+	}
+
 	return subcommands.ExitSuccess
 }
 
@@ -478,4 +611,3 @@ func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomm
 	fmt.Println("\naudit: all checks passed")
 	return subcommands.ExitSuccess
 }
-
