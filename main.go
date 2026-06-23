@@ -102,8 +102,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		return subcommands.ExitUsageError
 	}
 
-	kind, err := gitutil.ParseRefKind(c.ref)
-	if err != nil {
+	if _, err := gitutil.ParseRefKind(c.ref); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
 		return subcommands.ExitUsageError
 	}
@@ -127,43 +126,14 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		return subcommands.ExitFailure
 	}
 
-	// Resolve commit hash from the ref.
-	commit, err := gitutil.ResolveRef(c.repoDir, c.ref)
+	// Phase 1: Build the signed checkpoint note and ancestry proof.
+	signed, ancestry, err := buildCheckpointRequest(c.repoDir, c.ref, pol.LogName, signer)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: resolving ref: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
-	// Build the checkpoint body using the log name from the policy.
-	body := pol.LogName + " " + c.ref + "\n" + commit + "\n"
-
-	// Sign the checkpoint.
-	signed, err := note.Sign(body, signer)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: signing checkpoint: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Build ancestry proof (branches only; tags don't need one).
-	var ancestry []string
-	if kind == gitutil.RefBranch {
-		if oldCheckpoint, err := gitutil.ReadCheckpoint(c.repoDir, c.ref); err == nil {
-			oldBody, err := note.ExtractBody(oldCheckpoint)
-			if err == nil {
-				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
-				if len(lines) >= 2 {
-					oldCommit := strings.TrimSpace(lines[1])
-					ancestry, err = gitutil.GetCommitChain(c.repoDir, oldCommit, commit)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "error: generating ancestry proof: %v\n", err)
-						return subcommands.ExitFailure
-					}
-				}
-			}
-		}
-	}
-
-	// Collect cosignatures from witnesses in parallel.
+	// Phase 2: Collect cosignatures from witnesses in parallel.
 	// Each witness gets its own 30-second deadline so a hung or slow witness
 	// does not block the command indefinitely.
 	type cosigResult struct {
@@ -186,37 +156,98 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 			ch <- cosigResult{w.PolicyName, line, err}
 		}(w)
 	}
-	cosigned := 0
+	var cosigLines []string
 	for range witnesses {
 		r := <-ch
 		if r.err != nil {
 			fmt.Fprintf(os.Stderr, "warning: witness %s failed: %v\n", r.policyName, r.err)
 			continue
 		}
-		signed = note.AppendSignature(signed, r.cosigLine)
-		cosigned++
+		cosigLines = append(cosigLines, r.cosigLine)
 	}
 
-	// Verify the assembled checkpoint satisfies the policy quorum.
-	assembledBody, assembledSigLines, err := note.ParseSignedNote(signed)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: parsing assembled checkpoint: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
-		fmt.Fprintf(os.Stderr, "error: quorum not satisfied: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Store the checkpoint as a git ref.
-	if err := gitutil.StoreCheckpoint(c.repoDir, c.ref, signed); err != nil {
-		fmt.Fprintf(os.Stderr, "error: storing checkpoint: %v\n", err)
+	// Phase 3: Assemble cosignatures, verify quorum, and store.
+	if err := assembleAndStoreCheckpoint(c.repoDir, c.ref, signed, cosigLines, pol); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
 	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
-	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, cosigned)
+	fmt.Printf("checkpoint stored at %s (%d witness cosignatures)\n", cpRef, len(cosigLines))
 	return subcommands.ExitSuccess
+}
+
+// buildCheckpointRequest signs a checkpoint for the given ref and builds the
+// ancestry proof (for branches). It returns the signed note and the ancestry
+// lines. This is the shared core logic used by both the checkpoint and
+// checkpoint-request subcommands.
+func buildCheckpointRequest(repoDir, ref, origin string, signer *note.Signer) (signedNote string, ancestry []string, err error) {
+	kind, err := gitutil.ParseRefKind(ref)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid ref: %v", err)
+	}
+
+	// Resolve commit hash from the ref.
+	commit, err := gitutil.ResolveRef(repoDir, ref)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving ref: %v", err)
+	}
+
+	// Build the checkpoint body.
+	body := origin + " " + ref + "\n" + commit + "\n"
+
+	// Sign the checkpoint.
+	signed, err := note.Sign(body, signer)
+	if err != nil {
+		return "", nil, fmt.Errorf("signing checkpoint: %v", err)
+	}
+
+	// Build ancestry proof (branches only; tags don't need one).
+	if kind == gitutil.RefBranch {
+		if oldCheckpoint, err := gitutil.ReadCheckpoint(repoDir, ref); err == nil {
+			oldBody, err := note.ExtractBody(oldCheckpoint)
+			if err == nil {
+				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
+				if len(lines) >= 2 {
+					oldCommit := strings.TrimSpace(lines[1])
+					ancestry, err = gitutil.GetCommitChain(repoDir, oldCommit, commit)
+					if err != nil {
+						return "", nil, fmt.Errorf("generating ancestry proof: %v", err)
+					}
+				}
+			}
+		}
+	}
+
+	return signed, ancestry, nil
+}
+
+// assembleAndStoreCheckpoint appends cosignature lines to a signed note,
+// verifies the assembled checkpoint against the policy quorum, and stores it
+// as a Git ref. This is the shared core logic used by both the checkpoint and
+// checkpoint-store subcommands.
+func assembleAndStoreCheckpoint(repoDir, ref, signedNote string, cosigLines []string, pol *policy.Policy) error {
+	// Append cosignatures.
+	assembled := signedNote
+	for _, cosigLine := range cosigLines {
+		assembled = note.AppendSignature(assembled, cosigLine)
+	}
+
+	// Verify the assembled checkpoint satisfies the policy quorum.
+	assembledBody, assembledSigLines, err := note.ParseSignedNote(assembled)
+	if err != nil {
+		return fmt.Errorf("parsing assembled checkpoint: %v", err)
+	}
+	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
+		return fmt.Errorf("quorum not satisfied: %v", err)
+	}
+
+	// Store the checkpoint as a git ref.
+	if err := gitutil.StoreCheckpoint(repoDir, ref, assembled); err != nil {
+		return fmt.Errorf("storing checkpoint: %v", err)
+	}
+
+	return nil
 }
 
 type checkpointRequestCmd struct {
@@ -263,8 +294,7 @@ func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...
 		return subcommands.ExitUsageError
 	}
 
-	kind, err := gitutil.ParseRefKind(c.ref)
-	if err != nil {
+	if _, err := gitutil.ParseRefKind(c.ref); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
 		return subcommands.ExitUsageError
 	}
@@ -276,6 +306,7 @@ func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...
 
 	// Load the origin signing key.
 	var signer *note.Signer
+	var err error
 	if c.kmsKey != "" {
 		signer, err = note.NewKMSSigner(context.Background(), c.origin, c.kmsKey, note.RoleOrigin)
 	} else {
@@ -292,40 +323,11 @@ func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...
 		origin = signer.Name
 	}
 
-	// Resolve commit hash from the ref.
-	commit, err := gitutil.ResolveRef(c.repoDir, c.ref)
+	// Build the signed checkpoint note and ancestry proof.
+	signed, ancestry, err := buildCheckpointRequest(c.repoDir, c.ref, origin, signer)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: resolving ref: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
-	}
-
-	// Build the checkpoint body.
-	body := origin + " " + c.ref + "\n" + commit + "\n"
-
-	// Sign the checkpoint.
-	signed, err := note.Sign(body, signer)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: signing checkpoint: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Build ancestry proof (branches only; tags don't need one).
-	var ancestry []string
-	if kind == gitutil.RefBranch {
-		if oldCheckpoint, err := gitutil.ReadCheckpoint(c.repoDir, c.ref); err == nil {
-			oldBody, err := note.ExtractBody(oldCheckpoint)
-			if err == nil {
-				lines := strings.Split(strings.TrimSpace(oldBody), "\n")
-				if len(lines) >= 2 {
-					oldCommit := strings.TrimSpace(lines[1])
-					ancestry, err = gitutil.GetCommitChain(c.repoDir, oldCommit, commit)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "error: generating ancestry proof: %v\n", err)
-						return subcommands.ExitFailure
-					}
-				}
-			}
-		}
 	}
 
 	// Assemble wire-format request: ancestry lines, empty line, signed note.
@@ -410,38 +412,27 @@ func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...an
 	}
 	signed := string(noteData)
 
-	// Read and append each cosignature.
+	// Read each cosignature file.
+	var cosigLines []string
 	for _, cosigPath := range c.cosigPaths {
 		cosigData, err := os.ReadFile(cosigPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: reading cosignature file %s: %v\n", cosigPath, err)
 			return subcommands.ExitFailure
 		}
-		cosigLine := strings.TrimSpace(string(cosigData))
-		signed = note.AppendSignature(signed, cosigLine)
+		cosigLines = append(cosigLines, strings.TrimSpace(string(cosigData)))
 	}
 
-	// Parse the assembled checkpoint.
-	assembledBody, assembledSigLines, err := note.ParseSignedNote(signed)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: parsing assembled checkpoint: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Load the policy and verify.
+	// Load the policy.
 	pol, err := policy.Load(c.policyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 		return subcommands.ExitFailure
 	}
-	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
-		fmt.Fprintf(os.Stderr, "error: quorum not satisfied: %v\n", err)
-		return subcommands.ExitFailure
-	}
 
-	// Store the checkpoint as a git ref.
-	if err := gitutil.StoreCheckpoint(c.repoDir, c.ref, signed); err != nil {
-		fmt.Fprintf(os.Stderr, "error: storing checkpoint: %v\n", err)
+	// Assemble cosignatures, verify quorum, and store.
+	if err := assembleAndStoreCheckpoint(c.repoDir, c.ref, signed, cosigLines, pol); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
