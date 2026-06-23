@@ -19,7 +19,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 go_library(
     name = "witness_lib",
     srcs = ["main.go"],
-    importpath = "github.com/BenBirt/git-ratchet/witness",
+    importpath = "github.com/project-oak/git-ratchet/witness",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/gitutil",
@@ -45,7 +45,7 @@ go_test(
 go_library(
     name = "cosign_lib",
     srcs = ["cosign.go"],
-    importpath = "github.com/BenBirt/git-ratchet/witness/cosign",
+    importpath = "github.com/project-oak/git-ratchet/witness/cosign",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/gitutil",

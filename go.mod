@@ -1,4 +1,4 @@
-module github.com/BenBirt/git-ratchet
+module github.com/project-oak/git-ratchet
 
 go 1.26
 

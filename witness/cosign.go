@@ -34,9 +34,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/BenBirt/git-ratchet/internal/gitutil"
-	"github.com/BenBirt/git-ratchet/internal/note"
-	iwitness "github.com/BenBirt/git-ratchet/internal/witness"
+	"github.com/project-oak/git-ratchet/internal/gitutil"
+	"github.com/project-oak/git-ratchet/internal/note"
+	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
 var (

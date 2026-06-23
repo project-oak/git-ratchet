@@ -1,0 +1,189 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'git-ratchet checkpoint'
+description: >
+  Origin-side checkpoint lifecycle: create a checkpoint request, submit it
+  to all witnesses (HTTP and GitHub Issue), collect cosignatures, evaluate
+  quorum, and store the result.
+
+inputs:
+  ref:
+    description: 'Full ref path to checkpoint (e.g. refs/heads/main)'
+    required: true
+  origin-key:
+    description: 'Origin Ed25519 private key file contents (vkey + seed)'
+    required: true
+  policy:
+    description: 'Path to the witness policy file (relative to repo root)'
+    required: true
+  github-token:
+    description: 'GitHub token with permission to create issues on witness repos'
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: 'git-ratchet version to install (e.g. "v0.1.0"). Defaults to latest.'
+    required: false
+    default: 'latest'
+  timeout:
+    description: 'Timeout in seconds for GitHub Issue witness polling'
+    required: false
+    default: '300'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install git-ratchet
+      uses: project-oak/git-ratchet/actions/setup@main
+      with:
+        tool: git-ratchet
+        version: ${{ inputs.version }}
+
+    - name: Create checkpoint request
+      shell: bash
+      env:
+        ORIGIN_KEY: ${{ inputs.origin-key }}
+      run: |
+        # Write origin key to a temporary file.
+        KEYFILE="${RUNNER_TEMP}/origin.vkey"
+        printf '%s\n' "$ORIGIN_KEY" > "$KEYFILE"
+        chmod 600 "$KEYFILE"
+
+        git-ratchet checkpoint-request \
+          --ref "${{ inputs.ref }}" \
+          --key "$KEYFILE" \
+          --output-request "${RUNNER_TEMP}/request.txt" \
+          --output-note "${RUNNER_TEMP}/note.txt"
+
+        rm -f "$KEYFILE"
+
+    - name: Submit to witnesses and collect cosignatures
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        COSIG_DIR="${RUNNER_TEMP}/cosigs"
+        mkdir -p "$COSIG_DIR"
+        COSIG_COUNT=0
+
+        # Parse witness lines from the policy file.
+        # Format: witness <name> <url> <vkey>
+        while IFS=' ' read -r _ NAME URL _VKEY; do
+          SCHEME="${URL%%://*}"
+
+          case "$SCHEME" in
+            https|http)
+              echo "Submitting to HTTP witness ${NAME} at ${URL}..."
+              HTTP_CODE=$(curl -s -o "${COSIG_DIR}/cosig-${NAME}.txt" \
+                -w '%{http_code}' \
+                -X POST \
+                --data-binary @"${RUNNER_TEMP}/request.txt" \
+                "${URL}")
+              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+                echo "::notice::Received cosignature from HTTP witness ${NAME}"
+                COSIG_COUNT=$((COSIG_COUNT + 1))
+              else
+                echo "::warning::HTTP witness ${NAME} returned status ${HTTP_CODE}"
+                rm -f "${COSIG_DIR}/cosig-${NAME}.txt"
+              fi
+              ;;
+
+            github-issue)
+              # URL format: github-issue://owner/repo
+              WITNESS_REPO="${URL#github-issue://}"
+              echo "Submitting to GitHub Issue witness ${NAME} at ${WITNESS_REPO}..."
+
+              # Extract origin and ref from the signed note for the issue title.
+              NOTE_FIRST_LINE=$(sed -n '/^$/,$ p' "${RUNNER_TEMP}/request.txt" \
+                | tail -n+2 | head -1)
+              ORIGIN_NAME=$(echo "$NOTE_FIRST_LINE" | cut -d' ' -f1)
+              REF_NAME=$(echo "$NOTE_FIRST_LINE" | cut -d' ' -f2)
+
+              # Create the issue with the request body in an add-checkpoint fence.
+              ISSUE_BODY=$(printf '```add-checkpoint\n%s\n```' \
+                "$(cat "${RUNNER_TEMP}/request.txt")")
+              ISSUE_URL=$(gh issue create \
+                --repo "$WITNESS_REPO" \
+                --title "checkpoint: ${ORIGIN_NAME} ${REF_NAME}" \
+                --body "$ISSUE_BODY")
+              ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+
+              echo "Created issue #${ISSUE_NUM} on ${WITNESS_REPO}. Polling..."
+
+              # Poll for a cosignature comment (look for the em dash signature prefix).
+              ELAPSED=0
+              POLL_INTERVAL=5
+              COSIG=""
+              while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+                sleep "$POLL_INTERVAL"
+                ELAPSED=$((ELAPSED + POLL_INTERVAL))
+
+                # Check if issue is closed (witness processed it).
+                STATE=$(gh api "repos/${WITNESS_REPO}/issues/${ISSUE_NUM}" \
+                  --jq '.state' 2>/dev/null || echo "open")
+
+                if [ "$STATE" = "closed" ]; then
+                  # Look for a cosignature in the comments.
+                  COSIG=$(gh api "repos/${WITNESS_REPO}/issues/${ISSUE_NUM}/comments" \
+                    --jq '.[].body' 2>/dev/null \
+                    | grep -oP '```\n\K— .*(?=\n```)' \
+                    | head -1 || true)
+                  break
+                fi
+              done
+
+              if [ -n "$COSIG" ]; then
+                printf '%s' "$COSIG" > "${COSIG_DIR}/cosig-${NAME}.txt"
+                echo "::notice::Received cosignature from GitHub Issue witness ${NAME}"
+                COSIG_COUNT=$((COSIG_COUNT + 1))
+              else
+                echo "::warning::GitHub Issue witness ${NAME} did not respond within ${TIMEOUT}s"
+              fi
+              ;;
+
+            *)
+              echo "::warning::Unknown witness URL scheme '${SCHEME}' for ${NAME}, skipping"
+              ;;
+          esac
+        done < <(grep '^witness ' "${{ inputs.policy }}")
+
+        echo "Collected ${COSIG_COUNT} cosignature(s)"
+
+    - name: Assemble and store checkpoint
+      shell: bash
+      run: |
+        COSIG_DIR="${RUNNER_TEMP}/cosigs"
+
+        # Build --cosig flags for each collected cosignature.
+        COSIG_FLAGS=""
+        for f in "${COSIG_DIR}"/cosig-*.txt; do
+          [ -f "$f" ] || continue
+          COSIG_FLAGS="${COSIG_FLAGS} --cosig ${f}"
+        done
+
+        git-ratchet checkpoint-store \
+          --ref "${{ inputs.ref }}" \
+          --policy "${{ inputs.policy }}" \
+          --note "${RUNNER_TEMP}/note.txt" \
+          $COSIG_FLAGS
+
+    - name: Push checkpoint ref
+      shell: bash
+      run: |
+        REF="${{ inputs.ref }}"
+        # checkpoint-store writes to refs/checkpoints/heads/<branch>
+        # or refs/checkpoints/tags/<tag>.
+        CHECKPOINT_REF="refs/checkpoints/${REF#refs/}"
+        git push origin "$CHECKPOINT_REF"

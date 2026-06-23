@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 func mustGenerateKey(t *testing.T, name string, sigType note.SigType, role note.KeyRole) *note.Signer {

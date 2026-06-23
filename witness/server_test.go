@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 // mustFindWitnessBinary locates the compiled witness binary from Bazel runfiles.

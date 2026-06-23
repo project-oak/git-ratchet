@@ -1,0 +1,93 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Setup git-ratchet'
+description: 'Download git-ratchet or witness-cosign from a GitHub Release and add to PATH'
+
+inputs:
+  tool:
+    description: 'Which tool to install: "git-ratchet" or "witness-cosign"'
+    required: true
+  version:
+    description: 'Release version to install (e.g. "v0.1.0"). Defaults to latest.'
+    required: false
+    default: 'latest'
+  github-token:
+    description: 'GitHub token for authenticated API calls (avoids rate limits)'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Detect platform
+      id: platform
+      shell: bash
+      run: |
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  ARCH="amd64" ;;
+          aarch64) ARCH="arm64" ;;
+        esac
+        echo "os=${OS}" >> "$GITHUB_OUTPUT"
+        echo "arch=${ARCH}" >> "$GITHUB_OUTPUT"
+
+    - name: Download and install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TOOL: ${{ inputs.tool }}
+        VERSION: ${{ inputs.version }}
+        PLATFORM_OS: ${{ steps.platform.outputs.os }}
+        PLATFORM_ARCH: ${{ steps.platform.outputs.arch }}
+      run: |
+        INSTALL_DIR="${RUNNER_TEMP}/git-ratchet-bin"
+        mkdir -p "$INSTALL_DIR"
+
+        REPO="project-oak/git-ratchet"
+
+        # Resolve "latest" to an actual tag.
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')
+        fi
+
+        # Map tool name to asset name.
+        case "$TOOL" in
+          git-ratchet)
+            ASSET="git-ratchet_${VERSION}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
+            BINARY="git-ratchet"
+            ;;
+          witness-cosign)
+            ASSET="witness-cosign_${VERSION}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
+            BINARY="witness-cosign"
+            ;;
+          *)
+            echo "::error::Unknown tool: ${TOOL}. Must be 'git-ratchet' or 'witness-cosign'."
+            exit 1
+            ;;
+        esac
+
+        echo "Downloading ${ASSET} from ${REPO}@${VERSION}..."
+        gh release download "$VERSION" \
+          --repo "$REPO" \
+          --pattern "$ASSET" \
+          --dir "$INSTALL_DIR"
+
+        tar -xzf "${INSTALL_DIR}/${ASSET}" -C "$INSTALL_DIR"
+        rm -f "${INSTALL_DIR}/${ASSET}"
+        chmod +x "${INSTALL_DIR}/${BINARY}"
+
+        echo "${INSTALL_DIR}" >> "$GITHUB_PATH"
+        echo "::notice::Installed ${BINARY} ${VERSION} (${PLATFORM_OS}/${PLATFORM_ARCH})"

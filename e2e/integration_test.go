@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 // TestIntegration runs the git-ratchet CLI against the real witness server,

@@ -90,7 +90,7 @@ resource "google_kms_crypto_key" "witness" {
 # --- Cloud Run service ---
 
 resource "google_cloud_run_v2_service" "witness" {
-  depends_on = [google_storage_bucket_object.origins]
+  depends_on          = [google_storage_bucket_object.origins]
   name                = "git-ratchet-witness"
   location            = var.region
   deletion_protection = false

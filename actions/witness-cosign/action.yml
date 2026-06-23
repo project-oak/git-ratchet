@@ -1,0 +1,154 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'git-ratchet witness-cosign'
+description: >
+  Witness-side cosigning Action. Parses a checkpoint request from a GitHub
+  Issue, verifies and cosigns it, commits the result, and replies to the
+  issue. Must be called from a workflow triggered by issues:opened.
+
+inputs:
+  witness-key:
+    description: 'Witness Ed25519 private key file contents (vkey + seed)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install witness-cosign
+      uses: project-oak/git-ratchet/actions/setup@main
+      with:
+        tool: witness-cosign
+
+    - name: Parse issue
+      id: parse
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const body = context.payload.issue.body;
+          const match = body.match(/```add-checkpoint\n([\s\S]*?)```/);
+          if (!match) {
+            core.setFailed('No add-checkpoint block found in issue body');
+            return;
+          }
+          const request = match[1].trimEnd();
+
+          // Extract origin and ref from the signed note (after the blank line).
+          const lines = request.split('\n');
+          const sepIdx = lines.indexOf('');
+          if (sepIdx < 0) {
+            core.setFailed('Invalid request format: no blank separator');
+            return;
+          }
+          const noteLines = lines.slice(sepIdx + 1);
+          const [origin, ref] = noteLines[0].split(' ');
+
+          core.setOutput('origin', origin);
+          core.setOutput('ref', ref);
+          core.setOutput('request_body',
+            Buffer.from(request).toString('base64'));
+
+    - name: Check origin is registered
+      shell: bash
+      env:
+        ORIGIN: ${{ steps.parse.outputs.origin }}
+        ISSUE: ${{ github.event.issue.number }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ ! -f "checkpoints/${ORIGIN}/vkeys.txt" ]; then
+          gh issue comment "$ISSUE" \
+            --body "❌ Origin \`${ORIGIN}\` is not registered."
+          gh issue close "$ISSUE" --reason "not planned"
+          echo "::error::Origin ${ORIGIN} is not registered"
+          exit 1
+        fi
+
+    - name: Cosign
+      shell: bash
+      env:
+        ORIGIN: ${{ steps.parse.outputs.origin }}
+        REF: ${{ steps.parse.outputs.ref }}
+        REQUEST_B64: ${{ steps.parse.outputs.request_body }}
+        WITNESS_KEY: ${{ inputs.witness-key }}
+      run: |
+        # Write request body and witness key to temporary files.
+        echo "$REQUEST_B64" | base64 -d > "${RUNNER_TEMP}/request.txt"
+        printf '%s\n' "$WITNESS_KEY" > "${RUNNER_TEMP}/witness.vkey"
+        chmod 600 "${RUNNER_TEMP}/witness.vkey"
+
+        # Build --stored-checkpoint flag only if a prior checkpoint exists.
+        STATE_ARG=""
+        if [ -f "checkpoints/${ORIGIN}/${REF}" ]; then
+          STATE_ARG="--stored-checkpoint checkpoints/${ORIGIN}/${REF}"
+        fi
+
+        witness-cosign \
+          --request "${RUNNER_TEMP}/request.txt" \
+          --origin-vkeys "checkpoints/${ORIGIN}/vkeys.txt" \
+          $STATE_ARG \
+          --key "${RUNNER_TEMP}/witness.vkey" \
+          > "${RUNNER_TEMP}/cosig.txt"
+
+        # Clean up key material.
+        rm -f "${RUNNER_TEMP}/witness.vkey"
+
+    - name: Commit cosigned checkpoint
+      shell: bash
+      env:
+        ORIGIN: ${{ steps.parse.outputs.origin }}
+        REF: ${{ steps.parse.outputs.ref }}
+        REQUEST_B64: ${{ steps.parse.outputs.request_body }}
+      run: |
+        # Extract the signed note from the request (everything after the blank line).
+        echo "$REQUEST_B64" | base64 -d \
+          | sed -n '/^$/,$ p' | tail -n+2 > "${RUNNER_TEMP}/checkpoint.txt"
+
+        # Append cosignature.
+        cat "${RUNNER_TEMP}/cosig.txt" >> "${RUNNER_TEMP}/checkpoint.txt"
+
+        # Write to repo.
+        mkdir -p "$(dirname "checkpoints/${ORIGIN}/${REF}")"
+        mv "${RUNNER_TEMP}/checkpoint.txt" "checkpoints/${ORIGIN}/${REF}"
+
+        git config user.name "witness-bot"
+        git config user.email "witness-bot@users.noreply.github.com"
+        git add "checkpoints/${ORIGIN}/${REF}"
+
+        COMMIT=$(sed -n '2p' "checkpoints/${ORIGIN}/${REF}")
+        git commit -m "cosign: ${ORIGIN} ${REF} @ ${COMMIT}"
+        git push
+
+    - name: Post cosignature to issue
+      shell: bash
+      env:
+        ISSUE: ${{ github.event.issue.number }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        COSIG=$(cat "${RUNNER_TEMP}/cosig.txt")
+        gh issue comment "$ISSUE" \
+          --body "$(printf '✅ Cosigned.\n\n```\n%s\n```' "$COSIG")"
+        gh issue close "$ISSUE" --reason "completed"
+
+    - name: Handle failure
+      if: failure()
+      shell: bash
+      env:
+        ISSUE: ${{ github.event.issue.number }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh issue comment "$ISSUE" \
+          --body "❌ Rejected. See [workflow run]\
+        (${{ github.server_url }}/${{ github.repository }}/actions/\
+        runs/${{ github.run_id }})."
+        gh issue close "$ISSUE" --reason "not planned"

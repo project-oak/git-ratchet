@@ -20,7 +20,7 @@ go_library(
         "client.go",
         "verify.go",
     ],
-    importpath = "github.com/BenBirt/git-ratchet/internal/witness",
+    importpath = "github.com/project-oak/git-ratchet/internal/witness",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/gitutil"],
 )

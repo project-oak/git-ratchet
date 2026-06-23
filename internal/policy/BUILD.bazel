@@ -17,7 +17,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "policy",
     srcs = ["policy.go"],
-    importpath = "github.com/BenBirt/git-ratchet/internal/policy",
+    importpath = "github.com/project-oak/git-ratchet/internal/policy",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/note"],
 )

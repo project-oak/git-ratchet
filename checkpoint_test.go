@@ -30,8 +30,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/BenBirt/git-ratchet/internal/gitutil"
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/gitutil"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 // TestCheckpointBasic creates a git repo, runs git-ratchet checkpoint with

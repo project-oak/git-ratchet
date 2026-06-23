@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 // splitWireFormat splits the add-checkpoint wire format into the ancestry

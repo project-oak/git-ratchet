@@ -22,7 +22,7 @@ go_library(
         "ref.go",
         "repo.go",
     ],
-    importpath = "github.com/BenBirt/git-ratchet/internal/gitutil",
+    importpath = "github.com/project-oak/git-ratchet/internal/gitutil",
     visibility = ["//:__subpackages__"],
 )
 

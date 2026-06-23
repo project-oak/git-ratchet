@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BenBirt/git-ratchet/internal/gitutil"
-	"github.com/BenBirt/git-ratchet/internal/note"
-	"github.com/BenBirt/git-ratchet/internal/policy"
-	"github.com/BenBirt/git-ratchet/internal/witness"
+	"github.com/project-oak/git-ratchet/internal/gitutil"
+	"github.com/project-oak/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/policy"
+	"github.com/project-oak/git-ratchet/internal/witness"
 	"github.com/google/subcommands"
 )
 

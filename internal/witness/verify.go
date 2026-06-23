@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BenBirt/git-ratchet/internal/gitutil"
+	"github.com/project-oak/git-ratchet/internal/gitutil"
 )
 
 // ParseAddCheckpointRequest splits an add-checkpoint request body into the

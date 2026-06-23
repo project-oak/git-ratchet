@@ -20,7 +20,7 @@ gazelle(name = "gazelle")
 go_library(
     name = "git-ratchet_lib",
     srcs = ["main.go"],
-    importpath = "github.com/BenBirt/git-ratchet",
+    importpath = "github.com/project-oak/git-ratchet",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/gitutil",

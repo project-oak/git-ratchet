@@ -41,7 +41,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 // Witness is a single trusted cosigner.

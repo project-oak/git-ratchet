@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/BenBirt/git-ratchet/internal/note"
+	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 var (
