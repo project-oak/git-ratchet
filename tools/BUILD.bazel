@@ -13,10 +13,30 @@
 # limitations under the License.
 
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:public"])
 
 sh_binary(
     name = "genoriginkey",
     srcs = ["genoriginkey.sh"],
+)
+
+sh_binary(
+    name = "genwitnesskey",
+    srcs = ["genwitnesskey.sh"],
+)
+
+sh_test(
+    name = "genoriginkey_test",
+    srcs = ["genoriginkey_test.sh"],
+    args = ["$(location :genoriginkey)"],
+    data = [":genoriginkey"],
+)
+
+sh_test(
+    name = "genwitnesskey_test",
+    srcs = ["genwitnesskey_test.sh"],
+    args = ["$(location :genwitnesskey)"],
+    data = [":genwitnesskey"],
 )
