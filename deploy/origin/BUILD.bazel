@@ -27,9 +27,9 @@ tf_library(
 
 tf_deploy(
     name = "origin",
-    deps = [":origin_lib"],
     vars = {
         "project": "PROJECT",
         "region": "us-central1",
     },
+    deps = [":origin_lib"],
 )

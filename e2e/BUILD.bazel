@@ -19,7 +19,7 @@ go_test(
     srcs = ["integration_test.go"],
     data = [
         "//:git-ratchet",
-        "//witness:witness",
+        "//witness",
     ],
     deps = ["//internal/note"],
 )

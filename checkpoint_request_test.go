@@ -30,7 +30,7 @@ import (
 //	<base64-commit-object-1>
 //	<base64-commit-object-2>
 //	...
-//	
+//
 //	<signed-note>
 //
 // The first empty line is the separator. Everything before it is ancestry

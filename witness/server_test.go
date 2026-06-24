@@ -523,4 +523,3 @@ func TestAddCheckpointValidAncestrySHA256(t *testing.T) {
 		t.Errorf("expected cosignature line, got: %q", body)
 	}
 }
-

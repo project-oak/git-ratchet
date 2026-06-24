@@ -102,7 +102,6 @@ func IsAncestor(repoDir, ancestor, descendant string) (bool, error) {
 	return true, nil
 }
 
-
 // GetCommitChain returns a slice of base64-encoded raw Git commit objects
 // representing the path from oldCommit to newCommit (excluding oldCommit,
 // and including newCommit).

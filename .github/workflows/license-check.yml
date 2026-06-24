@@ -12,25 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_tofu//tf:defs.bzl", "tf_deploy", "tf_library")
+name: License check
 
-package(default_visibility = ["//visibility:public"])
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-tf_library(
-    name = "witness_lib",
-    srcs = [
-        "main.tf",
-        "variables.tf",
-    ],
-    data = ["origins"],
-    providers = ["@tf_providers_hashicorp_google//:provider"],
-)
+permissions:
+  contents: read
 
-tf_deploy(
-    name = "witness",
-    vars = {
-        "project": "PROJECT",
-        "region": "us-central1",
-    },
-    deps = [":witness_lib"],
-)
+jobs:
+  license-header:
+    name: License headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate license headers
+        run: go run github.com/google/addlicense@v1.2.0 -check -s=only .

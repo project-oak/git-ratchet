@@ -24,11 +24,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/subcommands"
 	"github.com/project-oak/git-ratchet/internal/gitutil"
 	"github.com/project-oak/git-ratchet/internal/note"
 	"github.com/project-oak/git-ratchet/internal/policy"
 	"github.com/project-oak/git-ratchet/internal/witness"
-	"github.com/google/subcommands"
 )
 
 func main() {
@@ -356,9 +356,9 @@ func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...
 // stringSlice is a flag.Value that collects repeated --cosig flags.
 type stringSlice []string
 
-func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
-func (s *stringSlice) Get() any { return []string(*s) }
+func (s *stringSlice) Get() any           { return []string(*s) }
 
 type checkpointStoreCmd struct {
 	ref        string
@@ -368,8 +368,10 @@ type checkpointStoreCmd struct {
 	repoDir    string
 }
 
-func (*checkpointStoreCmd) Name() string     { return "checkpoint-store" }
-func (*checkpointStoreCmd) Synopsis() string { return "Assemble and store a cosigned checkpoint from files" }
+func (*checkpointStoreCmd) Name() string { return "checkpoint-store" }
+func (*checkpointStoreCmd) Synopsis() string {
+	return "Assemble and store a cosigned checkpoint from files"
+}
 func (*checkpointStoreCmd) Usage() string {
 	return `checkpoint-store [flags]:
   Assemble a cosigned checkpoint from a signed note and cosignature files.

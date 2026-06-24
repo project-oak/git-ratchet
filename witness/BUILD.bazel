@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# gazelle:ignore
+# TODO: Make this file gazelle-compliant. This directory contains two separate
+# go_binary targets (witness and cosign) that share the same Go package.
+# Gazelle merges them into a single go_library, breaking the cosign binary.
+# Fix by moving cosign into its own subdirectory (e.g. witness/cosign/).
 load("@tar.bzl", "mutate", "tar")
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")

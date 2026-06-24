@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# gazelle:ignore
+# TODO: Make this file gazelle-compliant. The command_test target uses a custom
+# name and a data dependency on the :git-ratchet binary (needed at test runtime)
+# that gazelle does not preserve. Either configure gazelle directives to retain
+# these, or restructure the test so gazelle can manage it.
 load("@gazelle//:def.bzl", "gazelle")
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 

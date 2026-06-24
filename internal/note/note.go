@@ -606,4 +606,3 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	}
 	return NewSigner(name, seed, sigType, role)
 }
-
