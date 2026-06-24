@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifactv8.0.1
+        uses: actions/download-artifact@v8.0.1
         with:
           path: release
           merge-multiple: true
