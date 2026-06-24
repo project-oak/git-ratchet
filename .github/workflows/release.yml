@@ -1,0 +1,117 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            platform: '@rules_go//go/toolchain:linux_amd64'
+          - os: linux
+            arch: arm64
+            platform: '@rules_go//go/toolchain:linux_arm64'
+          - os: darwin
+            arch: amd64
+            platform: '@rules_go//go/toolchain:darwin_amd64'
+          - os: darwin
+            arch: arm64
+            platform: '@rules_go//go/toolchain:darwin_arm64'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: |
+          bazel build \
+            --platforms=${{ matrix.platform }} \
+            //:git-ratchet \
+            //witness:cosign
+
+      - name: Package
+        env:
+          VERSION: ${{ github.ref_name }}
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          STAGING="${RUNNER_TEMP}/release"
+          mkdir -p "$STAGING"
+
+          # Resolve output paths via cquery (robust across platform transitions).
+          GR_BIN=$(bazel cquery --output=files --platforms="$PLATFORM" //:git-ratchet 2>/dev/null)
+          WC_BIN=$(bazel cquery --output=files --platforms="$PLATFORM" //witness:cosign 2>/dev/null)
+
+          # Package git-ratchet.
+          GR_DIR=$(mktemp -d)
+          cp "$GR_BIN" "$GR_DIR/git-ratchet"
+          chmod +x "$GR_DIR/git-ratchet"
+          tar -czf "${STAGING}/git-ratchet_${VERSION}_${OS}_${ARCH}.tar.gz" \
+            -C "$GR_DIR" git-ratchet
+
+          # Package cosign.
+          WC_DIR=$(mktemp -d)
+          cp "$WC_BIN" "$WC_DIR/cosign"
+          chmod +x "$WC_DIR/cosign"
+          tar -czf "${STAGING}/cosign_${VERSION}_${OS}_${ARCH}.tar.gz" \
+            -C "$WC_DIR" cosign
+
+          # Per-platform checksums.
+          cd "$STAGING"
+          sha256sum *.tar.gz > checksums-${OS}-${ARCH}.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/release/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifactv8.0.1
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate combined checksums
+        run: |
+          cd release
+          cat checksums-*.txt | sort > checksums.txt
+          rm -f checksums-*.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "$VERSION" \
+            --generate-notes \
+            release/*.tar.gz \
+            release/checksums.txt

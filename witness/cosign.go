@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command witness-cosign reads an add-checkpoint request from stdin, verifies
+// Command cosign reads an add-checkpoint request from stdin, verifies
 // the origin signature and ancestry proof, and writes the cosignature line to
 // stdout.
 //
 // Usage:
 //
-//	witness-cosign \
+//	cosign \
 //	    --request request.txt \
 //	    --origin-vkeys origins.txt \
 //	    --key witness-key.pem \

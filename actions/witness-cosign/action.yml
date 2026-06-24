@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: 'git-ratchet witness-cosign'
+name: 'git-ratchet cosign'
 description: >
   Witness-side cosigning Action. Parses a checkpoint request from a GitHub
   Issue, verifies and cosigns it, commits the result, and replies to the
@@ -26,10 +26,10 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install witness-cosign
+    - name: Install cosign
       uses: project-oak/git-ratchet/actions/setup@main
       with:
-        tool: witness-cosign
+        tool: cosign
 
     - name: Parse issue
       id: parse
@@ -93,7 +93,7 @@ runs:
           STATE_ARG="--stored-checkpoint checkpoints/${ORIGIN}/${REF}"
         fi
 
-        witness-cosign \
+        cosign \
           --request "${RUNNER_TEMP}/request.txt" \
           --origin-vkeys "checkpoints/${ORIGIN}/vkeys.txt" \
           $STATE_ARG \

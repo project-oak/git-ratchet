@@ -13,11 +13,11 @@
 # limitations under the License.
 
 name: 'Setup git-ratchet'
-description: 'Download git-ratchet or witness-cosign from a GitHub Release and add to PATH'
+description: 'Download git-ratchet or cosign from a GitHub Release and add to PATH'
 
 inputs:
   tool:
-    description: 'Which tool to install: "git-ratchet" or "witness-cosign"'
+    description: 'Which tool to install: "git-ratchet" or "cosign"'
     required: true
   version:
     description: 'Release version to install (e.g. "v0.1.0"). Defaults to latest.'
@@ -69,12 +69,12 @@ runs:
             ASSET="git-ratchet_${VERSION}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
             BINARY="git-ratchet"
             ;;
-          witness-cosign)
-            ASSET="witness-cosign_${VERSION}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
-            BINARY="witness-cosign"
+          cosign)
+            ASSET="cosign_${VERSION}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
+            BINARY="cosign"
             ;;
           *)
-            echo "::error::Unknown tool: ${TOOL}. Must be 'git-ratchet' or 'witness-cosign'."
+            echo "::error::Unknown tool: ${TOOL}. Must be 'git-ratchet' or 'cosign'."
             exit 1
             ;;
         esac

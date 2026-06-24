@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main tests the witness-cosign CLI by invoking the compiled binary
+// Package main tests the cosign CLI by invoking the compiled binary
 // with crafted request files and checking exit codes and stdout/stderr output.
 package main_test
 

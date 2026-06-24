@@ -94,10 +94,10 @@ Runs a comprehensive end-to-end integrity scan combining three checks:
 2. **`git-ratchet verify`**: Verifies all checkpoint refs against the witness policy.
 3. **Replace ref rejection**: Errors if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on. Since replace refs are not fetched by default, their presence is treated as an integrity violation.
 
-### `witness-cosign` (standalone binary)
+### `cosign` (standalone binary)
 
 ```
-witness-cosign \
+cosign \
     --request <path> \
     --origin-vkeys <path> \
     --key <path> \
@@ -119,7 +119,7 @@ git-ratchet checkpoint-request \
     --output-note note.txt
 
 # 2. Submit to each witness (e.g. via the standalone cosign binary)
-witness-cosign \
+cosign \
     --request request.txt \
     --origin-vkeys origins.txt \
     --key witness-key.pem > cosig1.txt
