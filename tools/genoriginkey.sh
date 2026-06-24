@@ -35,6 +35,14 @@ fi
 
 OUTDIR="$1"
 NAME="${2:-git-ratchet-origin}"
+
+# When invoked via `bazel run`, relative paths resolve against the runfiles
+# sandbox, not the caller's working directory. Use BUILD_WORKSPACE_DIRECTORY
+# (set by Bazel) to resolve relative paths against the workspace root.
+if [[ "$OUTDIR" != /* ]] && [ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]; then
+    OUTDIR="${BUILD_WORKSPACE_DIRECTORY}/${OUTDIR}"
+fi
+
 mkdir -p "$OUTDIR"
 
 TMPDIR=$(mktemp -d)
