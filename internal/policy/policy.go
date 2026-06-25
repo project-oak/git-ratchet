@@ -35,9 +35,7 @@ import (
 	"bytes"
 	"crypto"
 	"fmt"
-	"maps"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -89,7 +87,6 @@ type Policy struct {
 	groups    map[string]*Group
 	quorum    *Group // nil means "quorum none"
 	quorumSet bool
-	refs      map[string]bool
 }
 
 // Witnesses returns all witnesses defined in the policy.
@@ -102,17 +99,6 @@ func (p *Policy) Witnesses() []*Witness {
 	return ws
 }
 
-// Refs returns the list of ref paths from "ref" directives, in the order
-// they appear in the policy file. Returns nil if no ref directives are present.
-func (p *Policy) Refs() []string {
-	return slices.Collect(maps.Keys(p.refs))
-}
-
-// HasRef reports whether the given ref path is listed in the policy's
-// ref directives.
-func (p *Policy) HasRef(ref string) bool {
-	return p.refs[ref]
-}
 
 // Load reads and parses a policy file.
 func Load(path string) (*Policy, error) {
@@ -125,7 +111,6 @@ func Load(path string) (*Policy, error) {
 	p := &Policy{
 		witnesses: make(map[string]*Witness),
 		groups:    make(map[string]*Group),
-		refs:      make(map[string]bool),
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -256,28 +241,12 @@ func Load(path string) (*Policy, error) {
 				p.quorum = g
 			}
 
-		case "ref":
-			if len(fields) != 2 {
-				return nil, fmt.Errorf("ref: expected 1 ref path argument")
-			}
-			refPath := fields[1]
-			if !strings.HasPrefix(refPath, "refs/heads/") && !strings.HasPrefix(refPath, "refs/tags/") {
-				return nil, fmt.Errorf("ref: path must begin with refs/heads/ or refs/tags/, got %q", refPath)
-			}
-			if p.refs[refPath] {
-				return nil, fmt.Errorf("ref: duplicate ref %q", refPath)
-			}
-			p.refs[refPath] = true
-
 		default:
 			return nil, fmt.Errorf("unknown directive: %q", fields[0])
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
-	}
-	if p.LogKey == nil {
-		return nil, fmt.Errorf("policy missing log key")
 	}
 	if !p.quorumSet {
 		return nil, fmt.Errorf("policy missing quorum")
@@ -292,6 +261,10 @@ func Load(path string) (*Policy, error) {
 // prefix embedded in the raw signature bytes, providing defence-in-depth
 // against key-confusion attacks where two signers share a name.
 func (p *Policy) Verify(body string, sigLines []string) error {
+	if p.LogKey == nil {
+		return fmt.Errorf("policy has no log key; cannot verify log signature")
+	}
+
 	// Verify the log signature.
 	logFound := false
 	for _, line := range sigLines {
@@ -316,6 +289,14 @@ func (p *Policy) Verify(body string, sigLines []string) error {
 		return fmt.Errorf("log signature not found (expected signer %q)", p.LogName)
 	}
 
+	return p.VerifyQuorum(body, sigLines)
+}
+
+// VerifyQuorum checks that sigLines satisfies the policy's quorum requirement
+// without verifying the log (origin) signature. This is appropriate for the
+// origin side (checkpoint-store) where the origin already signed the note
+// itself and only needs to confirm that enough witnesses cosigned.
+func (p *Policy) VerifyQuorum(body string, sigLines []string) error {
 	// "quorum none": no witnesses required.
 	if p.quorum == nil {
 		return nil

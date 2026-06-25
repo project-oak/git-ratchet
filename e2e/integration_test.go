@@ -61,7 +61,7 @@ func TestIntegration(t *testing.T) {
 	defer stopWitness()
 
 	clientKeyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL, "refs/heads/main")
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL)
 
 	// 1. Initial checkpoint — no ancestry required.
 	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath, commitHash1)
@@ -95,7 +95,7 @@ func TestIntegration(t *testing.T) {
 	stopWitness3 := startWitnessServer(t, witnessBin, port3, witnessKeyPath, originsPath, statePath)
 	defer stopWitness3()
 
-	policyPath3 := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL3, "refs/heads/main")
+	policyPath3 := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL3)
 	commitHash3 := makeCommit(t, repoDir, "third commit")
 	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath3, commitHash3)
 	if err := runVerify(t, gitRatchetBin, repoDir, policyPath3); err != nil {
@@ -155,7 +155,7 @@ func TestTagIntegration(t *testing.T) {
 	defer stopWitness()
 
 	clientKeyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL, "refs/tags/v1.0.0")
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL)
 
 	// 1. Checkpoint the tag.
 	out, err := exec.Command(gitRatchetBin,
@@ -248,7 +248,7 @@ func TestAuditIntegration(t *testing.T) {
 	defer stopWitness()
 
 	clientKeyPath := writeKeyFile(t, repoDir, originKey)
-	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL, "refs/heads/main")
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, witnessURL)
 
 	// Checkpoint so that verify passes during audit.
 	runCheckpoint(t, gitRatchetBin, repoDir, clientKeyPath, policyPath, "")
@@ -256,6 +256,7 @@ func TestAuditIntegration(t *testing.T) {
 	// 1. Clean audit should pass.
 	out, err := exec.Command(gitRatchetBin,
 		"audit",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -282,6 +283,7 @@ func TestAuditIntegration(t *testing.T) {
 
 	out, err = exec.Command(gitRatchetBin,
 		"audit",
+		"--ref", "refs/heads/main",
 		"--repo", repoDir,
 		"--policy", policyPath,
 	).CombinedOutput()
@@ -304,7 +306,7 @@ func TestAuditIntegration(t *testing.T) {
 	if err == nil {
 		t.Fatal("audit without --policy should fail")
 	}
-	if !strings.Contains(string(out), "--policy is required") {
+	if !strings.Contains(string(out), "--policy") {
 		t.Errorf("expected usage error about --policy, got:\n%s", out)
 	}
 }
@@ -439,14 +441,11 @@ func mustWriteKey(t *testing.T, path string, s *note.Signer) {
 	}
 }
 
-func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string, refs ...string) string {
+func writePolicyFile(t *testing.T, dir string, log, witness *note.Signer, witnessURL string) string {
 	t.Helper()
 	p := filepath.Join(dir, "policy.txt")
 	var b strings.Builder
 	fmt.Fprintf(&b, "log %s\n", log.VKey())
-	for _, ref := range refs {
-		fmt.Fprintf(&b, "ref %s\n", ref)
-	}
 	fmt.Fprintf(&b, "witness w1 %s %s\nquorum w1\n", witnessURL, witness.VKey())
 	if err := os.WriteFile(p, []byte(b.String()), 0644); err != nil {
 		t.Fatal(err)

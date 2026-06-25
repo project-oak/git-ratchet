@@ -238,7 +238,7 @@ func assembleAndStoreCheckpoint(repoDir, ref, signedNote string, cosigLines []st
 	if err != nil {
 		return fmt.Errorf("parsing assembled checkpoint: %v", err)
 	}
-	if err := pol.Verify(assembledBody, assembledSigLines); err != nil {
+	if err := pol.VerifyQuorum(assembledBody, assembledSigLines); err != nil {
 		return fmt.Errorf("quorum not satisfied: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...an
 }
 
 type verifyCmd struct {
-	ref        string
+	refs       stringSlice
 	policyPath string
 	repoDir    string
 }
@@ -456,11 +456,8 @@ func (*verifyCmd) Usage() string {
   Verify ref checkpoints against a witness policy.
 
   Verifies checkpoint signatures against the policy and confirms each ref
-  still matches the checkpointed commit.
-
-  If --ref is specified, only that ref is verified (it must be listed in
-  the policy's ref directives). If --ref is omitted, all refs listed in
-  the policy are verified.
+  still matches the checkpointed commit. The --ref flag can be repeated to
+  verify multiple refs in a single invocation.
 
   For branches, the local ref must not be ahead of the checkpointed commit.
   For tags, the tag must still point to the exact checkpointed commit.
@@ -469,16 +466,23 @@ func (*verifyCmd) Usage() string {
 }
 
 func (c *verifyCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&c.ref, "ref", "", "Full ref path to verify (e.g. refs/heads/main); if omitted, verify all refs in the policy")
+	f.Var(&c.refs, "ref", "Full ref path to verify (e.g. refs/heads/main) (required, repeatable)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 }
 
 func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if c.policyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --policy is required")
+	if c.policyPath == "" || len(c.refs) == 0 {
+		fmt.Fprintln(os.Stderr, "error: --policy and at least one --ref are required")
 		fmt.Fprint(os.Stderr, c.Usage())
 		return subcommands.ExitUsageError
+	}
+
+	for _, ref := range c.refs {
+		if _, err := gitutil.ParseRefKind(ref); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --ref %q: %v\n", ref, err)
+			return subcommands.ExitUsageError
+		}
 	}
 
 	// Load the policy.
@@ -488,25 +492,7 @@ func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcom
 		return subcommands.ExitFailure
 	}
 
-	// Determine which refs to verify.
-	var refs []string
-	if c.ref != "" {
-		if _, err := gitutil.ParseRefKind(c.ref); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid --ref: %v\n", err)
-			return subcommands.ExitUsageError
-		}
-		if !pol.HasRef(c.ref) {
-			fmt.Fprintf(os.Stderr, "error: ref %q is not listed in the policy\n", c.ref)
-			return subcommands.ExitFailure
-		}
-		refs = []string{c.ref}
-	} else {
-		refs = pol.Refs()
-		if len(refs) == 0 {
-			fmt.Fprintln(os.Stderr, "error: no refs to verify: add ref directives to the policy or use --ref")
-			return subcommands.ExitUsageError
-		}
-	}
+	refs := []string(c.refs)
 
 	// Verify refs in parallel.
 	type verifyResult struct {
@@ -600,6 +586,7 @@ func verifySingleRef(repoDir, ref string, pol *policy.Policy) error {
 }
 
 type auditCmd struct {
+	refs       stringSlice
 	policyPath string
 	repoDir    string
 }
@@ -616,8 +603,8 @@ func (*auditCmd) Usage() string {
      object's content matches its hash, all referenced objects exist,
      and the DAG is well-formed.
 
-  2. git-ratchet verify: Verifies all checkpoint refs listed in the
-     policy against the witness policy.
+  2. git-ratchet verify: Verifies checkpoints for the specified --ref
+     flags against the witness policy.
 
   3. Replace ref rejection: Errors if any refs exist under refs/replace/.
      Replace refs allow transparent object substitution, breaking the
@@ -627,15 +614,23 @@ func (*auditCmd) Usage() string {
 }
 
 func (c *auditCmd) SetFlags(f *flag.FlagSet) {
+	f.Var(&c.refs, "ref", "Full ref path to verify (e.g. refs/heads/main) (required, repeatable)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 }
 
 func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if c.policyPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --policy is required")
+	if c.policyPath == "" || len(c.refs) == 0 {
+		fmt.Fprintln(os.Stderr, "error: --policy and at least one --ref are required")
 		fmt.Fprint(os.Stderr, c.Usage())
 		return subcommands.ExitUsageError
+	}
+
+	for _, ref := range c.refs {
+		if _, err := gitutil.ParseRefKind(ref); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --ref %q: %v\n", ref, err)
+			return subcommands.ExitUsageError
+		}
 	}
 
 	failed := 0
@@ -649,39 +644,34 @@ func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomm
 		fmt.Println("ok   fsck")
 	}
 
-	// Phase 2: git-ratchet verify — check all policy refs.
+	// Phase 2: git-ratchet verify — check all refs.
 	fmt.Println("Running checkpoint verification...")
 	pol, err := policy.Load(c.policyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 		return subcommands.ExitUsageError
 	}
-	refs := pol.Refs()
-	if len(refs) == 0 {
-		fmt.Fprintln(os.Stderr, "FAIL verify: no refs to verify: add ref directives to the policy")
-		failed++
-	} else {
-		type verifyResult struct {
-			ref string
-			err error
-		}
-		results := make([]verifyResult, len(refs))
-		var wg sync.WaitGroup
-		for i, ref := range refs {
-			wg.Add(1)
-			go func(i int, ref string) {
-				defer wg.Done()
-				results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
-			}(i, ref)
-		}
-		wg.Wait()
-		for _, r := range results {
-			if r.err != nil {
-				fmt.Fprintf(os.Stderr, "FAIL verify %s: %v\n", r.ref, r.err)
-				failed++
-			} else {
-				fmt.Printf("ok   verify %s\n", r.ref)
-			}
+	refs := []string(c.refs)
+	type verifyResult struct {
+		ref string
+		err error
+	}
+	results := make([]verifyResult, len(refs))
+	var wg sync.WaitGroup
+	for i, ref := range refs {
+		wg.Add(1)
+		go func(i int, ref string) {
+			defer wg.Done()
+			results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
+		}(i, ref)
+	}
+	wg.Wait()
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL verify %s: %v\n", r.ref, r.err)
+			failed++
+		} else {
+			fmt.Printf("ok   verify %s\n", r.ref)
 		}
 	}
 

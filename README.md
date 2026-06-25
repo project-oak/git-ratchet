@@ -33,9 +33,7 @@ For branch checkpoints, the witness does not need a full clone of the repository
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
 ## Witness policy
-
-<!-- TODO: update tlog-policy link once https://github.com/C2SP/C2SP/pull/233 is merged -->
-A policy specifies the trusted origin key, witness keys, and quorum. The format extends the C2SP [tlog-policy](https://github.com/C2SP/C2SP/pull/233) specification with a `ref` directive for enumerating protected refs; see [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full format.
+A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification.
 
 ## Usage
 
@@ -77,15 +75,15 @@ Assembles a cosigned checkpoint from the signed note (produced by `checkpoint-re
 ### `git-ratchet verify`
 
 ```
-git-ratchet verify --policy <path> [--ref <refpath>] [flags]
+git-ratchet verify --policy <path> --ref <refpath> [--ref <refpath>...] [flags]
 ```
 
-Verifies checkpoint signatures against the policy and confirms each ref still matches the checkpointed commit. If `--ref` is omitted, all refs listed in the policy are verified.
+Verifies checkpoint signatures against the policy and confirms each ref still matches the checkpointed commit. The `--ref` flag can be repeated to verify multiple refs.
 
 ### `git-ratchet audit`
 
 ```
-git-ratchet audit --policy <path> [flags]
+git-ratchet audit --policy <path> --ref <refpath> [--ref <refpath>...] [flags]
 ```
 
 Runs a comprehensive end-to-end integrity scan combining three checks:
@@ -176,12 +174,10 @@ Follow [deploy/witness/README.md](deploy/witness/README.md) to deploy the witnes
 
 ### 3. Write a policy file
 
-Create a `policy.txt` (not committed) that ties together the origin vkey, the protected refs, and the witness:
+Create a `policy.txt` (not committed) that ties together the origin vkey and the witness:
 
 ```
 log <origin-vkey>
-
-ref refs/heads/main
 
 witness w1 <witness-url> <witness-vkey>
 
@@ -193,15 +189,10 @@ For example:
 ```
 log git-ratchet-origin+a1b2c3d4+AAAA...
 
-ref refs/heads/main
-ref refs/tags/v*
-
 witness w1 https://git-ratchet-witness-xxxxxxxx-uc.a.run.app git-ratchet-witness+e5f6a7b8+BBBB...
 
 quorum w1
 ```
-
-See [docs/checkpoint-policy.md](docs/checkpoint-policy.md) for the full policy format.
 
 ### 4. Checkpoint, verify, and audit
 
@@ -222,13 +213,7 @@ To inspect the stored checkpoint:
 git cat-file -p refs/checkpoints/heads/main
 ```
 
-**Verify** that all refs in the policy still match their witnessed checkpoints:
-
-```bash
-bazel run //:git-ratchet -- verify --policy $PWD/policy.txt
-```
-
-Or verify a single ref:
+**Verify** that a ref still matches its witnessed checkpoint:
 
 ```bash
 bazel run //:git-ratchet -- verify --policy $PWD/policy.txt --ref refs/heads/main
@@ -237,7 +222,7 @@ bazel run //:git-ratchet -- verify --policy $PWD/policy.txt --ref refs/heads/mai
 **Audit** the full repository integrity (fsck + verify + replace-ref check):
 
 ```bash
-bazel run //:git-ratchet -- audit --policy $PWD/policy.txt
+bazel run //:git-ratchet -- audit --policy $PWD/policy.txt --ref refs/heads/main
 ```
 
 Alternatively, build the binary once and invoke it directly:
@@ -245,8 +230,8 @@ Alternatively, build the binary once and invoke it directly:
 ```bash
 bazel build //:git-ratchet
 ./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --policy $PWD/policy.txt
-./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt
-./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt
+./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt --ref refs/heads/main
+./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt --ref refs/heads/main
 ```
 
 ## Disclaimer
