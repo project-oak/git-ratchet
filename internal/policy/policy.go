@@ -99,7 +99,6 @@ func (p *Policy) Witnesses() []*Witness {
 	return ws
 }
 
-
 // Load reads and parses a policy file.
 func Load(path string) (*Policy, error) {
 	f, err := os.Open(path)

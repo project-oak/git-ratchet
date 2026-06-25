@@ -595,7 +595,6 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	t.Logf("second checkpoint error (expected): %s", out)
 }
 
-
 func mustFindBinary(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("GIT_RATCHET_BIN"); p != "" {
