@@ -49,6 +49,7 @@ func main() {
 
 type checkpointCmd struct {
 	ref        string
+	origin     string
 	policyPath string
 	keyPath    string
 	kmsKey     string
@@ -66,7 +67,8 @@ func (*checkpointCmd) Usage() string {
   ref (refs/checkpoints/heads/<branch> or refs/checkpoints/tags/<tag>).
 
   The origin key can be provided as a local key file (--key) or as a
-  GCP KMS key resource name (--kms-key).
+  GCP KMS key resource name (--kms-key). The origin identity is derived
+  from the key file; use --origin to override (required when using --kms-key).
 
   For branches (refs/heads/*), witnesses enforce a forward-only ratchet: the
   new commit must be a descendant of the previously witnessed commit.
@@ -80,6 +82,7 @@ func (*checkpointCmd) Usage() string {
 
 func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
+	f.StringVar(&c.origin, "origin", "", "Origin identity for the checkpoint (required for --kms-key, derived from --key if omitted)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required unless --kms-key is set)")
 	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
@@ -107,17 +110,16 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		return subcommands.ExitUsageError
 	}
 
-	// Load the policy first — we need pol.LogName for KMS signer identity.
-	pol, err := policy.Load(c.policyPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
-		return subcommands.ExitFailure
+	if c.kmsKey != "" && c.origin == "" {
+		fmt.Fprintln(os.Stderr, "error: --origin is required when using --kms-key")
+		return subcommands.ExitUsageError
 	}
 
 	// Load the origin signing key.
 	var signer *note.Signer
+	var err error
 	if c.kmsKey != "" {
-		signer, err = note.NewKMSSigner(context.Background(), pol.LogName, c.kmsKey, note.RoleOrigin)
+		signer, err = note.NewKMSSigner(context.Background(), c.origin, c.kmsKey, note.RoleOrigin)
 	} else {
 		signer, err = note.ReadKeyFile(c.keyPath, note.RoleOrigin)
 	}
@@ -126,8 +128,22 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		return subcommands.ExitFailure
 	}
 
+	// Use the origin name from the flag, or derive from the key.
+	origin := c.origin
+	if origin == "" {
+		origin = signer.Name
+	}
+
+	// Load the policy for witnesses and quorum (the log line is not
+	// used on the checkpointer side — the origin knows its own identity).
+	pol, err := policy.Load(c.policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+
 	// Phase 1: Build the signed checkpoint note and ancestry proof.
-	signed, ancestry, err := buildCheckpointRequest(c.repoDir, c.ref, pol.LogName, signer)
+	signed, ancestry, err := buildCheckpointRequest(c.repoDir, c.ref, origin, signer)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure

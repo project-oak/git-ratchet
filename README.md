@@ -40,7 +40,7 @@ A policy specifies the trusted origin key, witness keys, and quorum. The format 
 ### `git-ratchet checkpoint`
 
 ```
-git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [flags]
+git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <name>] [flags]
 ```
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
@@ -163,6 +163,7 @@ This section walks through the full end-to-end setup: provisioning an origin sig
 Follow [deploy/origin/README.md](deploy/origin/README.md) to create a GCP Cloud KMS Ed25519 signing key for your origin. At the end you will have:
 
 - A `--kms-key` resource name to pass to `git-ratchet checkpoint`.
+- An **origin name** — the key name portion of the vkey (e.g. `git-ratchet-origin`). Pass this as `--origin` when checkpointing with `--kms-key`.
 - An **origin vkey** printed by `kmsvkey` — a string of the form `git-ratchet-origin+<keyid>+<base64pubkey>`. Keep this; you'll need it in the policy.
 
 ### 2. Deploy a witness
@@ -204,6 +205,7 @@ You can either build the binary once and run it directly, or use `bazel run` to 
 bazel run //:git-ratchet -- checkpoint \
   --ref refs/heads/main \
   --kms-key "$KMS_KEY" \
+  --origin "$ORIGIN" \
   --policy $PWD/policy.txt
 ```
 
@@ -229,7 +231,7 @@ Alternatively, build the binary once and invoke it directly:
 
 ```bash
 bazel build //:git-ratchet
-./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --policy $PWD/policy.txt
+./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --origin "$ORIGIN" --policy $PWD/policy.txt
 ./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt --ref refs/heads/main
 ./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt --ref refs/heads/main
 ```
