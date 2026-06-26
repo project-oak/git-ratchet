@@ -94,8 +94,8 @@ func mustFindCosignBinary(t *testing.T) string {
 	if srcDir := os.Getenv("TEST_SRCDIR"); srcDir != "" {
 		for _, ws := range []string{"_main", "__main__"} {
 			paths := []string{
-				filepath.Join(srcDir, ws, "witness", "cosign_", "cosign"),
-				filepath.Join(srcDir, ws, "witness", "cosign"),
+				filepath.Join(srcDir, ws, "witness", "cosign", "cosign_", "cosign"),
+				filepath.Join(srcDir, ws, "witness", "cosign", "cosign"),
 			}
 			for _, p := range paths {
 				if _, err := os.Stat(p); err == nil {
@@ -104,7 +104,7 @@ func mustFindCosignBinary(t *testing.T) string {
 			}
 		}
 	}
-	t.Fatal("cosign binary not found; run with: bazel test //witness:cosign_test")
+	t.Fatal("cosign binary not found; run with: bazel test //witness/cosign:cosign_test")
 	return ""
 }
 

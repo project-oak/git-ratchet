@@ -48,7 +48,7 @@ jobs:
           bazel build \
             --platforms=${{ matrix.platform }} \
             //:git-ratchet \
-            //witness:cosign
+            //witness/cosign
 
       - name: Package
         env:
@@ -62,7 +62,7 @@ jobs:
 
           # Resolve output paths via cquery (robust across platform transitions).
           GR_BIN=$(bazel cquery --output=files --platforms="$PLATFORM" //:git-ratchet 2>/dev/null)
-          WC_BIN=$(bazel cquery --output=files --platforms="$PLATFORM" //witness:cosign 2>/dev/null)
+          WC_BIN=$(bazel cquery --output=files --platforms="$PLATFORM" //witness/cosign 2>/dev/null)
 
           # Package git-ratchet.
           GR_DIR=$(mktemp -d)

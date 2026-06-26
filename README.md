@@ -102,7 +102,7 @@ cosign \
     [--stored-checkpoint <path>]
 ```
 
-A standalone witness binary (built via `bazel build //witness:cosign`) that reads an add-checkpoint request from a file, verifies the origin signature and ancestry proof, and writes the cosignature line to stdout. This is the offline counterpart to the HTTP witness server — it performs the same verification but reads from files instead of receiving HTTP requests.
+A standalone witness binary (built via `bazel build //witness/cosign`) that reads an add-checkpoint request from a file, verifies the origin signature and ancestry proof, and writes the cosignature line to stdout. This is the offline counterpart to the HTTP witness server — it performs the same verification but reads from files instead of receiving HTTP requests.
 
 ### Decomposed workflow
 
@@ -151,7 +151,7 @@ Requires [Bazel](https://bazel.build/) 9.1+:
 
 ```
 bazel build //:git-ratchet
-bazel build //witness:cosign
+bazel build //witness/cosign
 ```
 
 ## Demo
