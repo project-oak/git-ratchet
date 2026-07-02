@@ -51,7 +51,6 @@ func ParseAddCheckpointRequest(body string) (ancestry []string, signedNote strin
 	return ancestry, signedNote, nil
 }
 
-
 // VerifyAncestry checks that newCommit descends from storedCommit by walking
 // the provided ancestry proof using BFS. Each element of ancestry is a
 // base64-encoded Git commit object (wire format: "commit <size>\n<content>").
