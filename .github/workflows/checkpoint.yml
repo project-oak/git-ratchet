@@ -21,6 +21,7 @@ on:
 
 jobs:
   checkpoint:
+    name: Checkpoint (${{ github.ref_name }})
     runs-on: ubuntu-latest
     permissions:
       contents: write

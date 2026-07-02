@@ -194,4 +194,4 @@ runs:
         # checkpoint-store writes to refs/checkpoints/heads/<branch>
         # or refs/checkpoints/tags/<tag>.
         CHECKPOINT_REF="refs/checkpoints/${REF#refs/}"
-        git push origin "$CHECKPOINT_REF"
+        git push --force origin "$CHECKPOINT_REF"
