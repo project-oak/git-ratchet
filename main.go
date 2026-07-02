@@ -567,12 +567,17 @@ func verifySingleRef(repoDir, ref string, pol *policy.Policy) error {
 		return fmt.Errorf("checkpoint verification failed: %w", err)
 	}
 
-	// Extract the checkpointed commit hash from the note body.
-	bodyLines := strings.Split(strings.TrimSpace(body), "\n")
-	if len(bodyLines) < 2 {
-		return fmt.Errorf("malformed checkpoint body")
+	// Extract and validate the origin, ref, and commit from the checkpoint body.
+	cpOrigin, cpRef, checkpointedCommit, err := note.ParseCheckpointBody(body)
+	if err != nil {
+		return fmt.Errorf("malformed checkpoint body: %w", err)
 	}
-	checkpointedCommit := strings.TrimSpace(bodyLines[1])
+	if cpRef != ref {
+		return fmt.Errorf("checkpoint ref mismatch: checkpoint is for %q but verifying %q", cpRef, ref)
+	}
+	if cpOrigin != pol.LogName {
+		return fmt.Errorf("checkpoint origin mismatch: checkpoint is from %q but policy expects %q", cpOrigin, pol.LogName)
+	}
 
 	// Resolve the current commit from the ref.
 	localCommit, err := gitutil.ResolveRef(repoDir, ref)

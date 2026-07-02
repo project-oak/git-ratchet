@@ -183,7 +183,7 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse checkpoint body.
-	cpOrigin, ref, newCommit, err := iwitness.ParseCheckpointBody(noteBody)
+	cpOrigin, ref, newCommit, err := note.ParseCheckpointBody(noteBody)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

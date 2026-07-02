@@ -125,7 +125,7 @@ func main() {
 	}
 
 	// Step 4: Parse checkpoint body.
-	_, ref, newCommit, err := iwitness.ParseCheckpointBody(noteBody)
+	_, ref, newCommit, err := note.ParseCheckpointBody(noteBody)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -143,7 +143,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: parsing stored checkpoint: %v\n", err)
 			os.Exit(1)
 		}
-		_, _, storedCommit, err := iwitness.ParseCheckpointBody(storedNoteBody)
+		_, _, storedCommit, err := note.ParseCheckpointBody(storedNoteBody)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: parsing stored checkpoint body: %v\n", err)
 			os.Exit(1)

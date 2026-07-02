@@ -595,6 +595,61 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	t.Logf("second checkpoint error (expected): %s", out)
 }
 
+// TestVerifyCrossRefCheckpointSubstitution demonstrates an attack where a
+// legitimately cosigned checkpoint for one ref (main) is placed under another
+// ref's checkpoint location (dev). Verify must reject this because the ref
+// embedded in the signed checkpoint body does not match the ref being verified.
+func TestVerifyCrossRefCheckpointSubstitution(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	// Checkpoint refs/heads/main.
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/heads/main",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint main failed: %v\n%s", err, out)
+	}
+
+	// Create a dev branch at the same commit as main.
+	run(t, repoDir, "git", "branch", "dev")
+
+	// Read main's checkpoint blob and copy it to dev's checkpoint ref.
+	// This simulates an attacker substituting one ref's checkpoint for another.
+	mainCpBlob := runOutput(t, repoDir, "git", "rev-parse", "refs/checkpoints/heads/main")
+	mainCpBlob = strings.TrimSpace(mainCpBlob)
+	run(t, repoDir, "git", "update-ref", "refs/checkpoints/heads/dev", mainCpBlob)
+
+	// Verify refs/heads/dev — should FAIL because the checkpoint body says
+	// refs/heads/main, not refs/heads/dev.
+	out, err = exec.Command(binary,
+		"verify",
+		"--ref", "refs/heads/dev",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail for cross-ref checkpoint substitution, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "ref mismatch") {
+		t.Errorf("expected 'ref mismatch' in error output, got:\n%s", out)
+	}
+}
+
 func mustFindBinary(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("GIT_RATCHET_BIN"); p != "" {

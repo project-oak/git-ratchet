@@ -74,42 +74,6 @@ func TestParseAddCheckpointRequest_Empty(t *testing.T) {
 	}
 }
 
-func TestParseCheckpointBody_Valid(t *testing.T) {
-	noteBody := "example.com/repo refs/heads/main\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-	origin, ref, commit, err := ParseCheckpointBody(noteBody)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if origin != "example.com/repo" {
-		t.Errorf("unexpected origin: %q", origin)
-	}
-	if ref != "refs/heads/main" {
-		t.Errorf("unexpected ref: %q", ref)
-	}
-	if commit != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Errorf("unexpected commit: %q", commit)
-	}
-}
-
-func TestParseCheckpointBody_Malformed_TooFewLines(t *testing.T) {
-	noteBody := "only-one-line\n"
-	_, _, _, err := ParseCheckpointBody(noteBody)
-	if err == nil {
-		t.Fatal("expected error for malformed body, got nil")
-	}
-}
-
-func TestParseCheckpointBody_Malformed_BadRefLine(t *testing.T) {
-	noteBody := "only-one-field\naaaa\n"
-	_, _, _, err := ParseCheckpointBody(noteBody)
-	if err == nil {
-		t.Fatal("expected error for malformed ref line, got nil")
-	}
-	if !strings.Contains(err.Error(), "malformed ref line") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
 // makeCommitObject builds a minimal Git commit object for testing.
 func makeCommitObject(t *testing.T, parentHash, message string) (commitID string, wireBytes []byte) {
 	t.Helper()

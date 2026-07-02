@@ -606,3 +606,23 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	}
 	return NewSigner(name, seed, sigType, role)
 }
+
+// ParseCheckpointBody extracts the origin, ref, and commit hash from a
+// checkpoint note body. The expected format is:
+//
+//	<origin> <ref>\n
+//	<commit-hash>\n
+func ParseCheckpointBody(noteBody string) (origin string, ref string, commit string, err error) {
+	bodyLines := strings.Split(strings.TrimSpace(noteBody), "\n")
+	if len(bodyLines) < 2 {
+		return "", "", "", fmt.Errorf("malformed checkpoint body: need at least 2 lines, got %d", len(bodyLines))
+	}
+	refParts := strings.Fields(bodyLines[0])
+	if len(refParts) != 2 {
+		return "", "", "", fmt.Errorf("malformed ref line in checkpoint body: expected 2 fields, got %d", len(refParts))
+	}
+	origin = refParts[0]
+	ref = refParts[1]
+	commit = strings.TrimSpace(bodyLines[1])
+	return origin, ref, commit, nil
+}
