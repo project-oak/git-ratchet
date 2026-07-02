@@ -592,7 +592,124 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected second checkpoint to fail after tag was moved, but it succeeded:\n%s", out)
 	}
+	// Must be a hard rejection, not a quorum failure from a silently-skipped warning.
+	if !strings.Contains(string(out), "rejected checkpoint") {
+		t.Errorf("expected 'rejected checkpoint' in error output, got:\n%s", out)
+	}
 	t.Logf("second checkpoint error (expected): %s", out)
+}
+
+// TestCheckpointWitnessRejectionNotDowngraded verifies the fix for the bug
+// where a witness returning 422 (ancestry proof failed — possible rollback)
+// was logged as a warning and skipped. If another witness still satisfies
+// quorum, the old code would silently succeed, discarding the strongest
+// signal of an attack. After the fix, a 422 rejection is a hard error.
+func TestCheckpointWitnessRejectionNotDowngraded(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	goodWitnessKey := mustGenerateKey(t, "good-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	badWitnessKey := mustGenerateKey(t, "bad-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	// Good witness: returns valid cosignatures.
+	goodWS := newFakeWitness(t, goodWitnessKey, originKey)
+	defer goodWS.Close()
+
+	// Bad witness: always returns 422 (ancestry proof failed).
+	badWS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "ancestry proof verification failed", http.StatusUnprocessableEntity)
+	}))
+	defer badWS.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+
+	// Policy: two witnesses, quorum requires only one (via "any").
+	// Under the old code, the bad witness's 422 would be skipped and the
+	// good witness's cosig would satisfy quorum → silent success.
+	policyPath := filepath.Join(repoDir, "policy.txt")
+	var b strings.Builder
+	fmt.Fprintf(&b, "log %s\n", originKey.VKey())
+	fmt.Fprintf(&b, "witness w1 %s %s\n", goodWS.URL, goodWitnessKey.VKey())
+	fmt.Fprintf(&b, "witness w2 %s %s\n", badWS.URL, badWitnessKey.VKey())
+	fmt.Fprintf(&b, "group both any w1 w2\n")
+	fmt.Fprintf(&b, "quorum both\n")
+	if err := os.WriteFile(policyPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/heads/main",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected checkpoint to fail when a witness rejects with 422, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "rejected checkpoint") {
+		t.Errorf("expected 'rejected checkpoint' in error output, got:\n%s", out)
+	}
+	t.Logf("checkpoint error (expected): %s", out)
+}
+
+// TestCheckpointTransientFailureStillSkippable verifies that transient
+// failures (e.g. HTTP 500) are still treated as skippable warnings, so
+// the quorum check determines the final outcome.
+func TestCheckpointTransientFailureStillSkippable(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	goodWitnessKey := mustGenerateKey(t, "good-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	badWitnessKey := mustGenerateKey(t, "bad-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	// Good witness: returns valid cosignatures.
+	goodWS := newFakeWitness(t, goodWitnessKey, originKey)
+	defer goodWS.Close()
+
+	// Bad witness: returns 500 (transient server error).
+	badWS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer badWS.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "initial commit")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+
+	// Policy: two witnesses, quorum requires only one.
+	// The bad witness's 500 should be skipped (warning), and the good
+	// witness's cosig should satisfy quorum → success.
+	policyPath := filepath.Join(repoDir, "policy.txt")
+	var b strings.Builder
+	fmt.Fprintf(&b, "log %s\n", originKey.VKey())
+	fmt.Fprintf(&b, "witness w1 %s %s\n", goodWS.URL, goodWitnessKey.VKey())
+	fmt.Fprintf(&b, "witness w2 %s %s\n", badWS.URL, badWitnessKey.VKey())
+	fmt.Fprintf(&b, "group both any w1 w2\n")
+	fmt.Fprintf(&b, "quorum both\n")
+	if err := os.WriteFile(policyPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/heads/main",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected checkpoint to succeed when only a transient failure occurs (quorum met by good witness), but it failed:\n%s", out)
+	}
+	// Should contain a warning about the bad witness being skipped.
+	if !strings.Contains(string(out), "warning") {
+		t.Errorf("expected a warning about the failed witness, got:\n%s", out)
+	}
+	t.Logf("checkpoint output (with warning): %s", out)
 }
 
 // TestVerifyCrossRefCheckpointSubstitution demonstrates an attack where a

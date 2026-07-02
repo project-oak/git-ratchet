@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -176,7 +177,20 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	for range witnesses {
 		r := <-ch
 		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "warning: witness %s failed: %v\n", r.policyName, r.err)
+			// A witness rejection (e.g. HTTP 422: ancestry proof
+			// failed) is the strongest signal that a rollback may
+			// be in progress. Treat it as a hard error — do not
+			// silently skip it just because other witnesses might
+			// still satisfy quorum.
+			var rejection *witness.RejectionError
+			if errors.As(r.err, &rejection) {
+				fmt.Fprintf(os.Stderr, "error: witness %s rejected checkpoint: %v\n", r.policyName, r.err)
+				return subcommands.ExitFailure
+			}
+			// Transient failures (timeouts, network errors, 5xx)
+			// are logged as warnings; the quorum check below will
+			// catch the case where too few witnesses responded.
+			fmt.Fprintf(os.Stderr, "warning: witness %s failed (skipped): %v\n", r.policyName, r.err)
 			continue
 		}
 		cosigLines = append(cosigLines, r.cosigLine)

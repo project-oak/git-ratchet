@@ -23,12 +23,43 @@ import (
 	"strings"
 )
 
+// RejectionError indicates the witness actively rejected the checkpoint.
+// This is fundamentally different from a transient failure (timeout, 5xx):
+// a rejection means the witness inspected the checkpoint and determined it
+// is invalid — for example, the ancestry proof failed (HTTP 422), which is
+// the strongest signal that a rollback may be in progress.
+//
+// Callers should treat RejectionError as a hard, non-skippable failure.
+type RejectionError struct {
+	// StatusCode is the HTTP status returned by the witness.
+	StatusCode int
+	// Detail is the body text returned by the witness.
+	Detail string
+}
+
+func (e *RejectionError) Error() string {
+	switch e.StatusCode {
+	case http.StatusUnprocessableEntity:
+		return fmt.Sprintf("witness rejected checkpoint (invalid ancestry proof): %s", e.Detail)
+	case http.StatusConflict:
+		return fmt.Sprintf("witness rejected checkpoint (conflict): %s", e.Detail)
+	case http.StatusForbidden:
+		return fmt.Sprintf("witness authorization failed: %s", e.Detail)
+	default:
+		return fmt.Sprintf("witness rejected checkpoint (HTTP %d): %s", e.StatusCode, e.Detail)
+	}
+}
+
 // Cosign sends a signed checkpoint and its ancestry proof to a witness endpoint
 // and returns the cosignature line. The witness verifies the origin signature
 // and ancestry, then returns a cosignature.
 //
 // The caller should pass a context with an appropriate deadline; Cosign will
 // cancel the HTTP request and return an error if the context expires.
+//
+// Cosign returns a *RejectionError when the witness actively rejects the
+// checkpoint (HTTP 409, 422, or 403). Callers must not silently skip these
+// errors.
 func Cosign(ctx context.Context, endpoint string, ancestry []string, signedCheckpoint string) (string, error) {
 	url := strings.TrimRight(endpoint, "/") + "/add-checkpoint"
 
@@ -61,10 +92,8 @@ func Cosign(ctx context.Context, endpoint string, ancestry []string, signedCheck
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return result, nil
-	case http.StatusUnprocessableEntity:
-		return "", fmt.Errorf("witness rejected checkpoint (invalid ancestry proof): %s", result)
-	case http.StatusForbidden:
-		return "", fmt.Errorf("witness authorization failed: %s", result)
+	case http.StatusUnprocessableEntity, http.StatusConflict, http.StatusForbidden:
+		return "", &RejectionError{StatusCode: resp.StatusCode, Detail: result}
 	default:
 		return "", fmt.Errorf("witness HTTP %d: %s", resp.StatusCode, result)
 	}
