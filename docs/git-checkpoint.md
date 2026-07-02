@@ -24,7 +24,7 @@ A checkpoint is a [signed note][signed-note]. The body consists of exactly two l
 
 The first line combines the **origin** — an opaque string identifying the repository — with the full **ref path**, separated by a single space (U+0020). The ref path MUST begin with `refs/heads/` (for branches) or `refs/tags/` (for tags).
 
-The second line is the hex-encoded hash of the object the ref points to. For branches and lightweight tags this is a commit hash; for annotated tags this is the tag object hash.
+The second line is the hex-encoded hash of the object the ref points to. For branches and lightweight tags this is a commit hash; for annotated tags this is the tag object hash (the hash of the tag object itself, not the underlying commit).
 
 ## Origin
 
@@ -40,7 +40,7 @@ The origin is a fixed, canonical identifier for the repository. It is not derive
 
 ## Signatures
 
-The checkpoint is signed by the origin and cosigned by zero or more witnesses. The origin signs the checkpoint body following the [signed note][signed-note] format. Witnesses append [cosignatures][tlog-cosignature]:
+The checkpoint is signed by the origin and cosigned by zero or more witnesses. Supported signature algorithms are Ed25519 and ML-DSA-44. The origin signs the checkpoint body following the [signed note][signed-note] format. Witnesses append [cosignatures][tlog-cosignature]:
 
 ```
 <origin> <refpath>

@@ -6,17 +6,19 @@ By [Ben Birt](https://github.com/benbirt) · Licensed under the [Apache License 
 
 git-ratchet creates **witnessed checkpoints** for Git branches and tags, ensuring that branch history can only move forward and that tags remain immutable. Independent witnesses cosign checkpoints, making silent rollback (via force-push, reset, or rebase) and tag tampering detectable and — with a quorum of witnesses — effectively impossible.
 
+> git-ratchet [uses itself to protect its own `main` branch and release tags](#self-witnessing).
+
 ## How it works
 
 Git is tamper-evident (commits reference their parents by hash), but it is not append-only. A repository owner can force-push to remove commits from a branch, or silently move a tag to point at a different commit. There is no cryptographic evidence the original state ever existed.
 
 git-ratchet closes this gap:
 
-1. **Checkpoint**: After a push (or merge) to a protected branch, or when creating a release tag, `git-ratchet checkpoint` creates a checkpoint — a [signed note](https://c2sp.org/signed-note) binding a ref to an object hash, signed with the origin's private key. It submits this checkpoint, along with an ancestry proof (for branches), to one or more independent **witnesses**.
+1. **Checkpoint**: After a push (or merge) to a protected branch, or when creating a release tag, `git-ratchet checkpoint` creates a checkpoint — a [signed note](https://c2sp.org/signed-note) binding a ref to an object hash, signed with the origin's private key (Ed25519 or ML-DSA-44). It submits this checkpoint, along with an ancestry proof (for branches), to one or more independent **witnesses**.
 
 2. **Witness cosigning**: Each witness verifies the origin signature, then enforces ref-type-specific rules (see [docs/witness-protocol.md](docs/witness-protocol.md) for the full protocol specification):
    - **Branches** (`refs/heads/*`): The witness checks that the new commit is a descendant of the last commit it cosigned for that origin. If valid, it returns a [cosignature](https://c2sp.org/tlog-cosignature). This enforces a forward-only ratchet — if the origin ever submits a checkpoint for a commit that does not descend from the previous one, the witness refuses.
-   - **Tags** (`refs/tags/*`): The witness checks that the commit matches the one it previously stored. Tags are immutable: once a tag is witnessed, it is pinned to that commit forever. Any attempt to checkpoint a moved tag is rejected.
+   - **Tags** (`refs/tags/*`): The witness checks that the object hash matches the one it previously stored. Tags are immutable: once a tag is witnessed, it is pinned to that object hash forever. Any attempt to checkpoint a moved tag is rejected. For annotated tags, the pinned hash is the tag object hash (not the underlying commit hash).
 
 3. **Storage**: The cosigned checkpoint (origin signature + witness cosignatures) is stored as a Git reference at `refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`.
 
@@ -24,7 +26,7 @@ git-ratchet closes this gap:
 
 ## Checkpoint format
 
-A checkpoint is a [signed note](https://c2sp.org/signed-note) binding a repository ref to an object hash, signed by the origin and cosigned by independent witnesses. See [docs/git-checkpoint.md](docs/git-checkpoint.md) for the full format specification.
+A checkpoint is a [signed note](https://c2sp.org/signed-note) binding a repository ref to an object hash, signed by the origin (Ed25519 or ML-DSA-44) and cosigned by independent witnesses. See [docs/git-checkpoint.md](docs/git-checkpoint.md) for the full format specification.
 
 ## Ancestry proofs
 
@@ -33,7 +35,26 @@ For branch checkpoints, the witness does not need a full clone of the repository
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
 ## Witness policy
-A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification.
+A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` witness URI scheme for [GitHub Issue witnesses](docs/github-issue-witness.md).
+
+## Witnesses
+
+git-ratchet supports two types of witnesses:
+
+- **HTTP witnesses**: A standalone server (deployed e.g. on Cloud Run) that responds to the [witness HTTP protocol](docs/witness-protocol.md). See [deploy/witness/README.md](deploy/witness/README.md) for deployment.
+- **GitHub Issue witnesses**: A GitHub repository that cosigns checkpoints via GitHub Actions, using GitHub Issues as the transport. See [docs/github-issue-witness.md](docs/github-issue-witness.md) for setup.
+
+## GitHub Actions
+
+Composite actions are provided for CI/CD integration:
+
+| Action | Description |
+|--------|-------------|
+| [`actions/setup`](actions/setup) | Install `git-ratchet` or `cosign` from a GitHub Release |
+| [`actions/checkpoint`](actions/checkpoint) | Origin-side: create, submit, assemble, and push a checkpoint |
+| [`actions/cosign`](actions/cosign) | Witness-side: cosign a checkpoint request from a GitHub Issue |
+
+See each action's README for inputs, permissions, and example workflows.
 
 ## Usage
 
@@ -45,7 +66,7 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <n
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
-Witnesses with non-HTTP endpoints (e.g. `github-issue://`) are skipped with a warning. Use the decomposed workflow below for those witnesses.
+Witnesses with non-HTTP endpoints (e.g. `github-issue://`) are skipped with a warning. Use the decomposed workflow below or the [`actions/checkpoint`](actions/checkpoint) action, which handles both HTTP and GitHub Issue witnesses.
 
 ### `git-ratchet checkpoint-request`
 
@@ -106,7 +127,7 @@ A standalone witness binary (built via `bazel build //witness/cosign`) that read
 
 ### Decomposed workflow
 
-The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. GitHub Issues), use the decomposed workflow:
+The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md)), use the decomposed workflow (or the [`actions/checkpoint`](actions/checkpoint) action, which handles both):
 
 ```bash
 # 1. Produce the request and signed note
@@ -234,6 +255,16 @@ bazel build //:git-ratchet
 ./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --origin "$ORIGIN" --policy $PWD/policy.txt
 ./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt --ref refs/heads/main
 ./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt --ref refs/heads/main
+```
+
+## Self-witnessing
+
+git-ratchet uses itself to protect its own `main` branch and release tags. Every push to `main` and every `v*` tag triggers the [checkpoint workflow](.github/workflows/checkpoint.yml), which submits the checkpoint to a [GitHub Issue witness](docs/github-issue-witness.md) at [`BenBirt/git-witness`](https://github.com/BenBirt/git-witness).
+
+The witness policy is in [`ratchet-checkpoint.policy`](ratchet-checkpoint.policy). Anyone can verify the integrity of this repository:
+
+```bash
+git-ratchet verify --policy ratchet-checkpoint.policy --ref refs/heads/main
 ```
 
 ## Disclaimer
