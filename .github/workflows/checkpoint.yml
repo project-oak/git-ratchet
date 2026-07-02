@@ -17,6 +17,7 @@ name: Checkpoint
 on:
   push:
     branches: [main]
+    tags: ['v*']
 
 jobs:
   checkpoint:
@@ -29,7 +30,7 @@ jobs:
           fetch-depth: 0
       - uses: project-oak/git-ratchet/actions/checkpoint@main
         with:
-          ref: refs/heads/main
+          ref: ${{ github.ref }}
           origin-key: ${{ secrets.ORIGIN_KEY }}
           policy: ratchet-checkpoint.policy
           github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}
