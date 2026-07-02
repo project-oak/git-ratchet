@@ -25,9 +25,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: project-oak/git-ratchet/actions/checkpoint@main
         with:
           ref: ${{ github.ref }}

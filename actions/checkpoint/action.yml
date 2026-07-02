@@ -44,11 +44,20 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
     - name: Install git-ratchet
       uses: project-oak/git-ratchet/actions/setup@main
       with:
         tool: git-ratchet
         version: ${{ inputs.version }}
+
+    - name: Fetch checkpoint refs
+      shell: bash
+      run: git fetch origin 'refs/checkpoints/*:refs/checkpoints/*' 2>/dev/null || true
 
     - name: Create checkpoint request
       shell: bash
