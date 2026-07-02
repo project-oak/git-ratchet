@@ -599,6 +599,174 @@ func TestTagCheckpointImmutability(t *testing.T) {
 	t.Logf("second checkpoint error (expected): %s", out)
 }
 
+// TestAnnotatedTagCheckpointBasic creates an annotated tag, checkpoints it,
+// and verifies the checkpoint body contains the tag object hash (not the
+// commit hash). Annotated tags produce a separate git object whose hash
+// differs from the underlying commit.
+func TestAnnotatedTagCheckpointBasic(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git-ratchet checkpoint --ref failed: %v\n%s", err, out)
+	}
+	t.Logf("checkpoint output: %s", out)
+
+	refOut, err := exec.Command("git", "-C", repoDir, "cat-file", "-p", "refs/checkpoints/tags/v1.0.0").Output()
+	if err != nil {
+		t.Fatalf("checkpoint ref not found at refs/checkpoints/tags/v1.0.0: %v", err)
+	}
+	checkpoint := string(refOut)
+
+	body, sigLines, err := note.ParseSignedNote(checkpoint)
+	if err != nil {
+		t.Fatalf("parsing checkpoint: %v", err)
+	}
+
+	// For an annotated tag, git rev-parse refs/tags/v1.0.0 returns the tag
+	// object hash, while refs/tags/v1.0.0^{commit} returns the commit hash.
+	tagObjHash := strings.TrimSpace(runOutput(t, repoDir, "git", "rev-parse", "refs/tags/v1.0.0"))
+	commitHash := strings.TrimSpace(runOutput(t, repoDir, "git", "rev-parse", "refs/tags/v1.0.0^{commit}"))
+
+	if tagObjHash == commitHash {
+		t.Fatalf("expected annotated tag object hash to differ from commit hash, but both are %s", tagObjHash)
+	}
+
+	expectedBody := originKey.Name + " refs/tags/v1.0.0\n" + tagObjHash + "\n"
+	if body != expectedBody {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", body, expectedBody)
+	}
+
+	if len(sigLines) != 2 {
+		t.Fatalf("expected 2 signature lines, got %d: %v", len(sigLines), sigLines)
+	}
+}
+
+// TestAnnotatedTagVerifyBasic checkpoints an annotated tag and then verifies
+// it, expecting both operations to succeed.
+func TestAnnotatedTagVerifyBasic(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	out, err = exec.Command(binary,
+		"verify",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify failed: %v\n%s", err, out)
+	}
+	t.Logf("verify output: %s", out)
+}
+
+// TestAnnotatedTagMetadataChangeDetected verifies that re-creating an
+// annotated tag at the same commit but with different metadata (e.g. a
+// different message) is detected as a mismatch. This works because
+// annotated tags produce a tag object whose hash incorporates the message,
+// tagger, and timestamp. Even though the underlying commit is unchanged,
+// the tag object hash differs, so verify fails.
+func TestAnnotatedTagMetadataChangeDetected(t *testing.T) {
+	binary := mustFindBinary(t)
+
+	originKey := mustGenerateKey(t, "test-origin", note.Ed25519Origin, note.RoleOrigin)
+	witnessKey := mustGenerateKey(t, "test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	ws := newFakeWitness(t, witnessKey, originKey)
+	defer ws.Close()
+
+	repoDir := initTestRepo(t)
+	_ = makeCommit(t, repoDir, "tagged release")
+	run(t, repoDir, "git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+
+	keyPath := writeKeyFile(t, repoDir, originKey)
+	policyPath := writePolicyFile(t, repoDir, originKey, witnessKey, ws.URL)
+
+	// Checkpoint the annotated tag.
+	out, err := exec.Command(binary,
+		"checkpoint",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--key", keyPath,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v\n%s", err, out)
+	}
+
+	// Verify should succeed before any changes.
+	out, err = exec.Command(binary,
+		"verify",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify before metadata change failed: %v\n%s", err, out)
+	}
+
+	// Delete and re-create the tag at THE SAME COMMIT but with different
+	// metadata. The tag object hash will change even though the commit
+	// hasn't moved.
+	run(t, repoDir, "git", "tag", "-d", "v1.0.0")
+	run(t, repoDir, "git", "tag", "-a", "v1.0.0", "-m", "Updated release notes")
+
+	// Verify should FAIL: the tag object hash changed.
+	out, err = exec.Command(binary,
+		"verify",
+		"--ref", "refs/tags/v1.0.0",
+		"--repo", repoDir,
+		"--policy", policyPath,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify to fail after annotated tag metadata change, but it succeeded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "tag does not match checkpoint") {
+		t.Errorf("expected 'tag does not match checkpoint' in error output, got:\n%s", out)
+	}
+	t.Logf("verify after metadata change (expected failure): %s", out)
+}
+
 // TestCheckpointWitnessRejectionNotDowngraded verifies the fix for the bug
 // where a witness returning 422 (ancestry proof failed — possible rollback)
 // was logged as a warning and skipped. If another witness still satisfies

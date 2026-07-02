@@ -1,6 +1,6 @@
 # Git Checkpoint
 
-This document specifies the format of a Git ref checkpoint: a [signed note][signed-note] binding a repository ref to a specific commit hash, cosigned by independent witnesses.
+This document specifies the format of a Git ref checkpoint: a [signed note][signed-note] binding a repository ref to the hash of the object it points to, cosigned by independent witnesses.
 
 [signed-note]: https://c2sp.org/signed-note@v1.0.0
 [tlog-cosignature]: https://c2sp.org/tlog-cosignature
@@ -19,12 +19,12 @@ A checkpoint is a [signed note][signed-note]. The body consists of exactly two l
 
 ```
 <origin> <refpath>
-<commit-hash>
+<object-hash>
 ```
 
 The first line combines the **origin** — an opaque string identifying the repository — with the full **ref path**, separated by a single space (U+0020). The ref path MUST begin with `refs/heads/` (for branches) or `refs/tags/` (for tags).
 
-The second line is the hex-encoded commit hash that the ref points to.
+The second line is the hex-encoded hash of the object the ref points to. For branches and lightweight tags this is a commit hash; for annotated tags this is the tag object hash.
 
 ## Origin
 
@@ -44,7 +44,7 @@ The checkpoint is signed by the origin and cosigned by zero or more witnesses. T
 
 ```
 <origin> <refpath>
-<commit-hash>
+<object-hash>
 
 — <origin-name>+<key-hash> <base64 signature>
 — <witness-name>+<key-hash> <base64 cosignature>
@@ -52,7 +52,7 @@ The checkpoint is signed by the origin and cosigned by zero or more witnesses. T
 
 ## Hash function support
 
-Git repositories use either SHA-1 or SHA-256 as their object hash (`extensions.objectFormat`). The hash algorithm is inferred from the length of the commit hash in the checkpoint body:
+Git repositories use either SHA-1 or SHA-256 as their object hash (`extensions.objectFormat`). The hash algorithm is inferred from the length of the object hash in the checkpoint body:
 
 - 40 hex characters → SHA-1
 - 64 hex characters → SHA-256

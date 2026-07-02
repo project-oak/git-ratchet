@@ -217,7 +217,7 @@ func buildCheckpointRequest(repoDir, ref, origin string, signer *note.Signer) (s
 		return "", nil, fmt.Errorf("invalid ref: %v", err)
 	}
 
-	// Resolve commit hash from the ref.
+	// Resolve object hash from the ref.
 	commit, err := gitutil.ResolveRef(repoDir, ref)
 	if err != nil {
 		return "", nil, fmt.Errorf("resolving ref: %v", err)

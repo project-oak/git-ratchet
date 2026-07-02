@@ -45,7 +45,7 @@ type Server struct {
 	trustedOrigins map[string]trustedOrigin
 	stateFile      string
 	mu             sync.RWMutex
-	commits        map[string]string // branch key -> commit hash
+	commits        map[string]string // branch key -> object hash
 }
 
 var (

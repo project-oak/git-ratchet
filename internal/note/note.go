@@ -301,7 +301,7 @@ func Cosign(signedNote string, signer *Signer) (string, error) {
 // The tlog-cosignature spec defines the cosigned_message for full checkpoints
 // (start=0) where end is the tree size and hash is the root hash.
 // Since git-ratchet checkpoints don't have a tree size or Merkle root,
-// we use the commit hash as the 32-byte hash and set end=0.
+// we use the object hash as the 32-byte hash and set end=0.
 func buildCosignedMessage(cosignerName string, timestamp uint64, body string) ([]byte, error) {
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	if len(lines) < 2 {
@@ -311,7 +311,7 @@ func buildCosignedMessage(cosignerName string, timestamp uint64, body string) ([
 	// Origin is the first line (e.g., "example.com/log refs/heads/main").
 	origin := lines[0]
 
-	// The commit hash line. For the binary message we need a 32-byte hash.
+	// The object hash line. For the binary message we need a 32-byte hash.
 	// If the commit is a hex-encoded SHA-1 (40 chars) or SHA-256 (64 chars),
 	// we SHA-256 it to get a fixed 32-byte value.
 	commitHash := strings.TrimSpace(lines[1])
@@ -607,11 +607,11 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	return NewSigner(name, seed, sigType, role)
 }
 
-// ParseCheckpointBody extracts the origin, ref, and commit hash from a
-// checkpoint note body. The expected format is:
+// ParseCheckpointBody extracts the origin, ref, and object hash (commit hash
+// or tag object hash) from a checkpoint note body. The expected format is:
 //
 //	<origin> <ref>\n
-//	<commit-hash>\n
+//	<object-hash>\n
 func ParseCheckpointBody(noteBody string) (origin string, ref string, commit string, err error) {
 	bodyLines := strings.Split(strings.TrimSpace(noteBody), "\n")
 	if len(bodyLines) < 2 {

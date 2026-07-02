@@ -23,7 +23,9 @@ import (
 	"strings"
 )
 
-// ResolveRef resolves a Git reference to a full commit hash.
+// ResolveRef resolves a Git reference to the hash of the object it points to.
+// For branches and lightweight tags this is a commit hash; for annotated tags
+// this is the tag object hash (not the underlying commit hash).
 func ResolveRef(repoDir, ref string) (string, error) {
 	out, err := git(repoDir, "rev-parse", ref)
 	if err != nil {

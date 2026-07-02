@@ -23,7 +23,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This protocol allows clients (typically Git repositories or deployment pipelines) to obtain cosignatures from witnesses, ensuring that branch references move strictly forward and that tag references remain immutable. When creating a new checkpoint for a ref, the client reaches out to witnesses to request cosignatures, providing a cryptographic ancestry proof (for branches). Witnesses verify the checkpoint against their previously recorded state for that ref, and return a timestamped cosignature.
 
-A witness is an entity exposing an HTTP service identified by a name and a public key. Each witness is configured with a list of supported origin public keys. For each unique repository ref (identified by the `origin` and `ref` in the checkpoint), the witness stores and tracks the latest commit hash it has cosigned.
+A witness is an entity exposing an HTTP service identified by a name and a public key. Each witness is configured with a list of supported origin public keys. For each unique repository ref (identified by the `origin` and `ref` in the checkpoint), the witness stores and tracks the latest object hash it has cosigned.
 
 Only authorized clients (e.g., origin repository administrators or CI systems) are expected to communicate directly with the witnesses. There is no authentication of requests beyond the validation of the signature on the checkpoint itself.
 
@@ -108,9 +108,9 @@ example.com/repo refs/tags/v1.2.3
 
 Upon receiving a `POST /add-checkpoint` request, the witness MUST perform the following checks:
 
-1. **Checkpoint Parsing:** Parse the signed note checkpoint. Verify that the format is valid and matches the `origin <ref>\n<commit-hash>` template.
+1. **Checkpoint Parsing:** Parse the signed note checkpoint. Verify that the format is valid and matches the `origin <ref>\n<object-hash>` template.
 2. **Signature Verification:** Check the origin signature against the configured trusted origin public key for the given `origin` identifier. If the signature is invalid, return `403 Forbidden`.
-3. **Repository State Lookup:** Look up the stored commit hash for the ref (`<origin>/<ref>`).
+3. **Repository State Lookup:** Look up the stored object hash for the ref (`<origin>/<ref>`).
 4. **Ref-Type-Specific Verification:**
    * If the new commit in the checkpoint matches the witness's stored commit, return `200 OK` along with the cosignature.
    * If the stored commit is empty (uninitialized ref):
@@ -125,7 +125,7 @@ Upon receiving a `POST /add-checkpoint` request, the witness MUST perform the fo
          * Start at the new checkpoint commit tip and traverse backward through parent linkages using the provided set of decoded commit objects.
          * If the witness's stored commit is successfully reached along this path, the verification succeeds.
          * If the traversal stops (reaches a commit whose parent object is missing from the request payload) before encountering the stored commit, return `422 Unprocessable Entity`.
-5. **State Update:** Update the stored commit hash for the ref to the new commit tip (branches only; tags are already at their permanent value).
+5. **State Update:** Update the stored object hash for the ref to the new commit tip (branches only; tags are already at their permanent value).
 6. **Signing:** Generate and return a cosignature line over the checkpoint.
 
 ## HTTP Response Codes
