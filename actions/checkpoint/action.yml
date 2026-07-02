@@ -138,8 +138,7 @@ runs:
                   # Look for a cosignature in the comments.
                   COSIG=$(gh api "repos/${WITNESS_REPO}/issues/${ISSUE_NUM}/comments" \
                     --jq '.[].body' 2>/dev/null \
-                    | grep -oP '```\n\K— .*(?=\n```)' \
-                    | head -1 || true)
+                    | grep -m1 '^— ' || true)
                   break
                 fi
               done
