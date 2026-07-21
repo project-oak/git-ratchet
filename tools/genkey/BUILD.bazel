@@ -15,22 +15,22 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
-    name = "genwitnesskey_lib",
+    name = "genkey_lib",
     srcs = ["main.go"],
-    importpath = "github.com/project-oak/git-ratchet/tools/genwitnesskey",
+    importpath = "github.com/project-oak/git-ratchet/tools/genkey",
     visibility = ["//visibility:private"],
     deps = ["//internal/note"],
 )
 
 go_binary(
-    name = "genwitnesskey",
-    embed = [":genwitnesskey_lib"],
+    name = "genkey",
+    embed = [":genkey_lib"],
     visibility = ["//visibility:public"],
 )
 
 go_test(
-    name = "genwitnesskey_test",
+    name = "genkey_test",
     srcs = ["main_test.go"],
-    data = [":genwitnesskey"],
+    data = [":genkey"],
     deps = ["//internal/note"],
 )
