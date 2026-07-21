@@ -613,7 +613,6 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	return ReadKeyData(data, role)
 }
 
-
 // ParseCheckpointBody extracts the origin, ref, and object hash (commit hash
 // or tag object hash) from a checkpoint note body. The expected format is:
 //
