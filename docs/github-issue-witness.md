@@ -74,14 +74,14 @@ private.
 
 ### 2. Generate a witness key pair
 
-Generate a key pair using the `genwitnesskey` script:
+Generate a key pair using the `genwitnesskey` tool:
 
 ```bash
-bazel run //tools:genwitnesskey -- <output-dir> <name>
+bazel run //tools/genwitnesskey -- --output-dir=<output-dir> --name=<name>
 ```
 
 This writes a `witness-key` file to `<output-dir>` and prints the verifier key
-(vkey) to stdout. The key file format is two lines: the vkey, followed by the
+(vkey) to stderr. The key file format is two lines: the vkey, followed by the
 base64-encoded seed.
 
 ### 3. Store the key as a secret

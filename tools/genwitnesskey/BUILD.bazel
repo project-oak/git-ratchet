@@ -12,31 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
-package(default_visibility = ["//visibility:public"])
-
-sh_binary(
-    name = "genoriginkey",
-    srcs = ["genoriginkey.sh"],
+go_library(
+    name = "genwitnesskey_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/project-oak/git-ratchet/tools/genwitnesskey",
+    visibility = ["//visibility:private"],
+    deps = ["//internal/note"],
 )
 
-sh_binary(
+go_binary(
     name = "genwitnesskey",
-    srcs = ["genwitnesskey.sh"],
+    embed = [":genwitnesskey_lib"],
+    visibility = ["//visibility:public"],
 )
 
-sh_test(
-    name = "genoriginkey_test",
-    srcs = ["genoriginkey_test.sh"],
-    args = ["$(location :genoriginkey)"],
-    data = [":genoriginkey"],
-)
-
-sh_test(
+go_test(
     name = "genwitnesskey_test",
-    srcs = ["genwitnesskey_test.sh"],
-    args = ["$(location :genwitnesskey)"],
+    srcs = ["main_test.go"],
     data = [":genwitnesskey"],
+    deps = ["//internal/note"],
 )
