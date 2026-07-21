@@ -570,13 +570,9 @@ func pubKeyBytes(pub crypto.PublicKey) []byte {
 //   Line 1: vkey string (name+hexID+base64(typeByte||pubkey))
 //   Line 2: base64-encoded 32-byte seed
 
-// ReadKeyFile reads a signer from a key file.
+// ReadKeyData parses a signer from key data bytes (2 lines: vkey and base64 seed).
 // The role is determined by the caller (origin vs cosigner).
-func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+func ReadKeyData(data []byte, role KeyRole) (*Signer, error) {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	if len(lines) != 2 {
 		return nil, fmt.Errorf("key file must have 2 lines: vkey and base64 seed")
@@ -606,6 +602,17 @@ func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
 	}
 	return NewSigner(name, seed, sigType, role)
 }
+
+// ReadKeyFile reads a signer from a key file.
+// The role is determined by the caller (origin vs cosigner).
+func ReadKeyFile(path string, role KeyRole) (*Signer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ReadKeyData(data, role)
+}
+
 
 // ParseCheckpointBody extracts the origin, ref, and object hash (commit hash
 // or tag object hash) from a checkpoint note body. The expected format is:
