@@ -74,12 +74,13 @@ private.
 
 ### 2. Generate a witness key pair
 
-Generate a key pair using the `genwitnesskey` tool:
+Generate a key pair using the `genkey` tool:
 
 ```bash
-bazel run //tools/genwitnesskey -- --name=<name> > witness-key
+bazel run //tools/genkey -- --role=witness --name=<name> [--algo=<algo>] > witness-key
 ```
 
+Where `<algo>` is one of `ed25519` (default) or `mldsa44`.
 This outputs the key content (the vkey followed by the base64-encoded seed) to stdout,
 and prints the verifier key (vkey) to stderr.
 
