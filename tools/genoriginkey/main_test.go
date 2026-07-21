@@ -50,33 +50,16 @@ func mustFindBinary(t *testing.T) string {
 
 func TestGenOriginKey(t *testing.T) {
 	binary := mustFindBinary(t)
-	dir := t.TempDir()
 
-	cmd := exec.Command(binary, "--output-dir", dir, "--name", "test-origin")
-	out, err := cmd.CombinedOutput()
+	cmd := exec.Command(binary, "--name", "test-origin")
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("genoriginkey failed: %v\nOutput: %s", err, out)
+		t.Fatalf("genoriginkey failed: %v", err)
 	}
 
-	keyPath := filepath.Join(dir, "origin-key")
-
-	// Check file permissions are 0600.
-	fi, err := os.Stat(keyPath)
-	if err != nil {
-		t.Fatalf("Stat(%s): %v", keyPath, err)
-	}
-	if perm := fi.Mode().Perm(); perm != 0600 {
-		t.Fatalf("expected permissions 0600, got %04o", perm)
-	}
-
-	content, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v", keyPath, err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("expected 2 lines in key file, got %d", len(lines))
+		t.Fatalf("expected 2 lines in key output, got %d", len(lines))
 	}
 
 	vkey := lines[0]
@@ -112,10 +95,10 @@ func TestGenOriginKey(t *testing.T) {
 		t.Fatalf("expected 32-byte seed, got %d", len(seed))
 	}
 
-	// Read back with note.ReadKeyFile and verify round-trip.
-	readSigner, err := note.ReadKeyFile(keyPath, note.RoleOrigin)
+	// Read back with note.ReadKeyData and verify round-trip.
+	readSigner, err := note.ReadKeyData(out, note.RoleOrigin)
 	if err != nil {
-		t.Fatalf("ReadKeyFile: %v", err)
+		t.Fatalf("ReadKeyData: %v", err)
 	}
 	if readSigner.VKey() != vkey {
 		t.Fatalf("round-trip vkey mismatch: got %s, want %s", readSigner.VKey(), vkey)

@@ -21,22 +21,20 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 var (
-	outputDir = flag.String("output-dir", "", "Directory to write the key file into (required)")
-	name      = flag.String("name", "", "Key name, e.g. my-witness (required)")
+	name = flag.String("name", "", "Key name, e.g. my-witness (required)")
 )
 
 func main() {
 	flag.Parse()
 
-	if *outputDir == "" || *name == "" {
+	if *name == "" {
 		flag.Usage()
-		log.Fatal("--output-dir and --name are required")
+		log.Fatal("--name is required")
 	}
 
 	signer, err := note.GenerateKey(*name, note.Ed25519Cosigner, note.RoleCosigner)
@@ -45,13 +43,7 @@ func main() {
 	}
 
 	seed := base64.StdEncoding.EncodeToString(signer.Seed())
-	keyFileContent := fmt.Sprintf("%s\n%s\n", signer.VKey(), seed)
 
-	keyFilePath := filepath.Join(*outputDir, "witness-key")
-	if err := os.WriteFile(keyFilePath, []byte(keyFileContent), 0600); err != nil {
-		log.Fatalf("Failed to write key file: %v", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Witness key written to %s\n", keyFilePath)
+	fmt.Printf("%s\n%s\n", signer.VKey(), seed)
 	fmt.Fprintf(os.Stderr, "VKey: %s\n", signer.VKey())
 }

@@ -21,22 +21,16 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/project-oak/git-ratchet/internal/note"
 )
 
 var (
-	outputDir = flag.String("output-dir", "", "Directory to write the key file into (required)")
-	name      = flag.String("name", "git-ratchet-origin", "Name for the generated key")
+	name = flag.String("name", "git-ratchet-origin", "Name for the generated key")
 )
 
 func main() {
 	flag.Parse()
-
-	if *outputDir == "" {
-		log.Fatal("--output-dir is required")
-	}
 
 	signer, err := note.GenerateKey(*name, note.Ed25519Origin, note.RoleOrigin)
 	if err != nil {
@@ -46,13 +40,6 @@ func main() {
 	vkey := signer.VKey()
 	seed := base64.StdEncoding.EncodeToString(signer.Seed())
 
-	keyPath := filepath.Join(*outputDir, "origin-key")
-	content := vkey + "\n" + seed + "\n"
-
-	if err := os.WriteFile(keyPath, []byte(content), 0600); err != nil {
-		log.Fatalf("Failed to write key file: %v", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Origin key written to %s\n", keyPath)
+	fmt.Printf("%s\n%s\n", vkey, seed)
 	fmt.Fprintf(os.Stderr, "VKey: %s\n", vkey)
 }
