@@ -1,0 +1,322 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Includable GitLab CI template for git-ratchet witness cosigning.
+#
+# CI/CD variables required:
+#   WITNESS_KEY          - File variable (protected): witness key file (vkey + base64 seed)
+#   WITNESS_API_TOKEN    - Masked, protected variable: project access token
+#                          (api scope, Maintainer role — needed to push to the
+#                          protected default branch)
+#
+# Optional variables:
+#   GIT_RATCHET_VERSION  - Version of the cosign binary to download (default: latest)
+
+variables:
+  GIT_RATCHET_VERSION: "latest"
+
+cosign:
+  image: alpine:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+  resource_group: cosign
+  before_script:
+    - apk add --no-cache curl jq git
+    # Determine download URL for the cosign binary.
+    - |
+      if [ "$GIT_RATCHET_VERSION" = "latest" ]; then
+        DOWNLOAD_URL=$(curl -fsSL "https://api.github.com/repos/project-oak/git-ratchet/releases/latest" \
+          | jq -r '.assets[] | select(.name == "cosign-linux-amd64") | .browser_download_url')
+      else
+        DOWNLOAD_URL="https://github.com/project-oak/git-ratchet/releases/download/${GIT_RATCHET_VERSION}/cosign-linux-amd64"
+      fi
+    - curl -fsSL -o /usr/local/bin/cosign "$DOWNLOAD_URL"
+    - chmod +x /usr/local/bin/cosign
+  script:
+    - |
+      set -eu
+
+      GITLAB_API="${CI_API_V4_URL}"
+      PROJECT_ID="${CI_PROJECT_ID}"
+      PROJECT_URL="${CI_PROJECT_URL}"
+
+      # URL-encode the project path for API calls (/ → %2F).
+      PROJECT_PATH_ENCODED=$(printf '%s' "$CI_PROJECT_PATH" | sed 's|/|%2F|g')
+
+      # List open issues titled "checkpoint:".
+      ISSUES=$(curl -fsSL \
+        --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+        "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues?state=opened&per_page=100&search=checkpoint:" \
+        | jq -c '[.[] | select(.title | startswith("checkpoint:"))]')
+
+      ISSUE_COUNT=$(printf '%s' "$ISSUES" | jq 'length')
+      echo "Found ${ISSUE_COUNT} open checkpoint issue(s)"
+
+      if [ "$ISSUE_COUNT" -eq 0 ]; then
+        echo "No open checkpoint issues — nothing to do."
+        exit 0
+      fi
+
+      HAD_FAILURE=0
+
+      printf '%s' "$ISSUES" | jq -c '.[]' | while IFS= read -r ISSUE; do
+        IID=$(printf '%s' "$ISSUE" | jq -r '.iid')
+        TITLE=$(printf '%s' "$ISSUE" | jq -r '.title')
+        echo ""
+        echo "=== Processing issue #${IID}: ${TITLE} ==="
+
+        # Re-fetch to check it is still open (idempotency: another pipeline
+        # or a previous iteration may have already processed it).
+        CURRENT_STATE=$(curl -fsSL \
+          --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+          "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" \
+          | jq -r '.state')
+
+        if [ "$CURRENT_STATE" != "opened" ]; then
+          echo "Issue #${IID} is no longer open (state: ${CURRENT_STATE}), skipping."
+          continue
+        fi
+
+        # Fetch issue description.
+        DESCRIPTION=$(curl -fsSL \
+          --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+          "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" \
+          | jq -r '.description')
+
+        # Parse the add-checkpoint fence from the description.
+        REQUEST_BODY=$(printf '%s' "$DESCRIPTION" | tr -d '\r' \
+          | awk '/^```add-checkpoint$/{f=1;next} /^```$/{f=0} f')
+
+        if [ -z "$REQUEST_BODY" ]; then
+          echo "No add-checkpoint block found in issue #${IID}, skipping."
+          # Post error and close.
+          curl -fsSL --request POST \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg b "❌ No add-checkpoint block found in issue description." '{body: $b}')" \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+          curl -fsSL --request PUT \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{"state_event":"close"}' \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+          continue
+        fi
+
+        # Extract origin and ref from the signed note (after the blank line).
+        ORIGIN_REF_LINE=$(printf '%s' "$REQUEST_BODY" | sed -n '/^$/,$ p' | tail -n+2 | head -1)
+        ORIGIN_NAME=$(printf '%s' "$ORIGIN_REF_LINE" | cut -d' ' -f1)
+        REF_NAME=$(printf '%s' "$ORIGIN_REF_LINE" | cut -d' ' -f2)
+
+        # Guard: reject empty, absolute, or traversal-containing origin/ref
+        # values — they become paths under checkpoints/ and could write outside it.
+        if [ -z "$ORIGIN_NAME" ] || [ -z "$REF_NAME" ]; then
+          echo "ERROR: Empty origin or ref in issue #${IID}."
+          curl -fsSL --request POST \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg b "❌ Rejected: empty origin or ref." '{body: $b}')" \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+          curl -fsSL --request PUT \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{"state_event":"close"}' \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+          continue
+        fi
+
+        case "$ORIGIN_NAME" in
+          /*|*..*)
+            echo "ERROR: Path traversal detected in origin '${ORIGIN_NAME}'."
+            curl -fsSL --request POST \
+              --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "$(jq -n --arg b "❌ Rejected: invalid origin path." '{body: $b}')" \
+              "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+            curl -fsSL --request PUT \
+              --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data '{"state_event":"close"}' \
+              "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+            continue
+            ;;
+        esac
+
+        case "$REF_NAME" in
+          /*|*..*)
+            echo "ERROR: Path traversal detected in ref '${REF_NAME}'."
+            curl -fsSL --request POST \
+              --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "$(jq -n --arg b "❌ Rejected: invalid ref path." '{body: $b}')" \
+              "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+            curl -fsSL --request PUT \
+              --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data '{"state_event":"close"}' \
+              "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+            continue
+            ;;
+        esac
+
+        # Check origin is registered.
+        if [ ! -f "checkpoints/${ORIGIN_NAME}/vkeys.txt" ]; then
+          echo "Origin '${ORIGIN_NAME}' is not registered."
+          curl -fsSL --request POST \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg b "❌ Origin \`${ORIGIN_NAME}\` is not registered." '{body: $b}')" \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+          curl -fsSL --request PUT \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{"state_event":"close"}' \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+          continue
+        fi
+
+        # Write request body to a temporary file.
+        TMPDIR=$(mktemp -d)
+        printf '%s\n' "$REQUEST_BODY" > "${TMPDIR}/request.txt"
+
+        # Build --stored-checkpoint flag only if a prior checkpoint exists.
+        STATE_ARG=""
+        if [ -f "checkpoints/${ORIGIN_NAME}/${REF_NAME}" ]; then
+          STATE_ARG="--stored-checkpoint checkpoints/${ORIGIN_NAME}/${REF_NAME}"
+        fi
+
+        # Run cosign.
+        COSIGN_STDERR="${TMPDIR}/cosign-stderr.txt"
+        if cosign \
+          --request "${TMPDIR}/request.txt" \
+          --origin-vkeys "checkpoints/${ORIGIN_NAME}/vkeys.txt" \
+          $STATE_ARG \
+          --key "$WITNESS_KEY" \
+          > "${TMPDIR}/cosig.txt" 2>"$COSIGN_STDERR"; then
+
+          # Success: commit the checkpoint file.
+          # Extract the signed note from the request (everything after the blank line).
+          printf '%s\n' "$REQUEST_BODY" \
+            | sed -n '/^$/,$ p' | tail -n+2 > "${TMPDIR}/checkpoint.txt"
+
+          # Append cosignature.
+          cat "${TMPDIR}/cosig.txt" >> "${TMPDIR}/checkpoint.txt"
+
+          # Write to repo.
+          mkdir -p "$(dirname "checkpoints/${ORIGIN_NAME}/${REF_NAME}")"
+          mv "${TMPDIR}/checkpoint.txt" "checkpoints/${ORIGIN_NAME}/${REF_NAME}"
+
+          git config user.name "witness-bot"
+          git config user.email "witness-bot@noreply.example.com"
+          git add "checkpoints/${ORIGIN_NAME}/${REF_NAME}"
+
+          COMMIT_HASH=$(sed -n '2p' "checkpoints/${ORIGIN_NAME}/${REF_NAME}")
+          git commit -m "cosign: ${ORIGIN_NAME} ${REF_NAME} @ ${COMMIT_HASH}"
+
+          # Push to the default branch. If the push fails (e.g. a concurrent
+          # commit landed), the job fails and the cosign-cleanup job closes the
+          # issue. The next triggered pipeline will re-process it from the
+          # correct state. We intentionally do NOT retry here: the cosignature
+          # was computed against the stored checkpoint at the time cosign ran,
+          # and a concurrent push may have updated it — re-applying the same
+          # cosignature after pulling would skip a state transition without
+          # validating the ancestry chain.
+          PUSH_URL="https://oauth2:${WITNESS_API_TOKEN}@$(echo "$CI_SERVER_HOST")/${CI_PROJECT_PATH}.git"
+          git push "$PUSH_URL" HEAD:"${CI_DEFAULT_BRANCH}"
+
+          # Post cosignature comment and close.
+          COSIG=$(cat "${TMPDIR}/cosig.txt")
+          COMMENT_BODY=$(printf '✅ Cosigned.\n\n```\n%s\n```' "$COSIG")
+          curl -fsSL --request POST \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg b "$COMMENT_BODY" '{body: $b}')" \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+          curl -fsSL --request PUT \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{"state_event":"close"}' \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+
+          echo "✅ Successfully cosigned issue #${IID}."
+        else
+          # Cosign failed — post error and close.
+          STDERR_CONTENT=$(cat "$COSIGN_STDERR" 2>/dev/null || echo "(no stderr)")
+          COMMENT_BODY=$(printf '❌ Rejected.\n\nError:\n```\n%s\n```\n\n[Pipeline](%s/-/pipelines/%s)' \
+            "$STDERR_CONTENT" "$PROJECT_URL" "$CI_PIPELINE_ID")
+          curl -fsSL --request POST \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg b "$COMMENT_BODY" '{body: $b}')" \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+          curl -fsSL --request PUT \
+            --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{"state_event":"close"}' \
+            "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+
+          echo "❌ Cosign failed for issue #${IID}."
+          HAD_FAILURE=1
+        fi
+
+        rm -rf "$TMPDIR"
+      done
+
+      if [ "$HAD_FAILURE" -ne 0 ]; then
+        echo "One or more cosign operations failed."
+        exit 1
+      fi
+
+cosign-cleanup:
+  image: alpine:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+      when: on_failure
+  resource_group: cosign
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - |
+      set -eu
+
+      GITLAB_API="${CI_API_V4_URL}"
+      PROJECT_URL="${CI_PROJECT_URL}"
+      PROJECT_PATH_ENCODED=$(printf '%s' "$CI_PROJECT_PATH" | sed 's|/|%2F|g')
+
+      # Close any open checkpoint issues created before this pipeline started.
+      # The timestamp filter prevents closing issues that belong to a newer
+      # pipeline's own trigger.
+      ISSUES=$(curl -fsSL \
+        --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+        "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues?state=opened&per_page=100&search=checkpoint:&created_before=${CI_PIPELINE_CREATED_AT}" \
+        | jq -c '[.[] | select(.title | startswith("checkpoint:"))]')
+
+      ISSUE_COUNT=$(printf '%s' "$ISSUES" | jq 'length')
+      echo "Found ${ISSUE_COUNT} stale checkpoint issue(s) to clean up"
+
+      printf '%s' "$ISSUES" | jq -c '.[]' | while IFS= read -r ISSUE; do
+        IID=$(printf '%s' "$ISSUE" | jq -r '.iid')
+        echo "Closing stale issue #${IID}..."
+
+        curl -fsSL --request POST \
+          --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+          --header "Content-Type: application/json" \
+          --data "$(jq -n --arg b "❌ Rejected (infrastructure failure). See [pipeline](${PROJECT_URL}/-/pipelines/${CI_PIPELINE_ID})." '{body: $b}')" \
+          "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}/notes" > /dev/null
+        curl -fsSL --request PUT \
+          --header "PRIVATE-TOKEN: ${WITNESS_API_TOKEN}" \
+          --header "Content-Type: application/json" \
+          --data '{"state_event":"close"}' \
+          "${GITLAB_API}/projects/${PROJECT_PATH_ENCODED}/issues/${IID}" > /dev/null
+      done

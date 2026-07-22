@@ -35,14 +35,15 @@ For branch checkpoints, the witness does not need a full clone of the repository
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
 ## Witness policy
-A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` witness URI scheme for [GitHub Issue witnesses](docs/github-issue-witness.md).
+A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` and `gitlab-issue://` witness URI schemes for [GitHub Issue witnesses](docs/github-issue-witness.md) and [GitLab Issue witnesses](docs/gitlab-issue-witness.md).
 
 ## Witnesses
 
-git-ratchet supports two types of witnesses:
+git-ratchet supports three types of witnesses:
 
 - **HTTP witnesses**: A standalone server (deployed e.g. on Cloud Run) that responds to the [witness HTTP protocol](docs/witness-protocol.md). See [deploy/witness/README.md](deploy/witness/README.md) for deployment.
 - **GitHub Issue witnesses**: A GitHub repository that cosigns checkpoints via GitHub Actions, using GitHub Issues as the transport. See [docs/github-issue-witness.md](docs/github-issue-witness.md) for setup.
+- **GitLab Issue witnesses**: A GitLab project that cosigns checkpoints via GitLab CI/CD, using GitLab Issues as the transport. Works with self-hosted instances. See [docs/gitlab-issue-witness.md](docs/gitlab-issue-witness.md) for setup.
 
 ## GitHub Actions
 
@@ -53,6 +54,8 @@ Composite actions are provided for CI/CD integration:
 | [`actions/setup`](actions/setup) | Install `git-ratchet` or `cosign` from a GitHub Release |
 | [`actions/checkpoint`](actions/checkpoint) | Origin-side: create, submit, assemble, and push a checkpoint |
 | [`actions/cosign`](actions/cosign) | Witness-side: cosign a checkpoint request from a GitHub Issue |
+
+For GitLab-based witnesses, an includable CI template is provided at [`gitlab/cosign.gitlab-ci.yml`](gitlab/cosign.gitlab-ci.yml). See [docs/gitlab-issue-witness.md](docs/gitlab-issue-witness.md) for setup.
 
 See each action's README for inputs, permissions, and example workflows.
 
@@ -66,7 +69,7 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <n
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
-Witnesses with non-HTTP endpoints (e.g. `github-issue://`) are skipped with a warning. Use the decomposed workflow below or the [`actions/checkpoint`](actions/checkpoint) action, which handles both HTTP and GitHub Issue witnesses.
+Witnesses with non-HTTP endpoints (e.g. `github-issue://`, `gitlab-issue://`) are skipped with a warning. Use the decomposed workflow below or the [`actions/checkpoint`](actions/checkpoint) action, which handles HTTP, GitHub Issue, and GitLab Issue witnesses.
 
 ### `git-ratchet checkpoint-request`
 
@@ -127,7 +130,7 @@ A standalone witness binary (built via `bazel build //witness/cosign`) that read
 
 ### Decomposed workflow
 
-The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md)), use the decomposed workflow (or the [`actions/checkpoint`](actions/checkpoint) action, which handles both):
+The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md) or [GitLab Issue witnesses](docs/gitlab-issue-witness.md)), use the decomposed workflow (or the [`actions/checkpoint`](actions/checkpoint) action, which handles all three):
 
 ```bash
 # 1. Produce the request and signed note
