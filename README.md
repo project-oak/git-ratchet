@@ -35,7 +35,7 @@ For branch checkpoints, the witness does not need a full clone of the repository
 Tag checkpoints do not require ancestry proofs. The witness simply checks that the submitted commit matches its stored state (or accepts the first checkpoint for a new tag).
 
 ## Witness policy
-A policy specifies the trusted origin key, witness keys, and quorum. The format follows the C2SP [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` witness URI scheme for [GitHub Issue witnesses](docs/github-issue-witness.md).
+A policy specifies the trusted origin key, witness keys, and quorum. The format follows the [C2SP](https://c2sp.org/) [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` witness URI scheme for [GitHub Issue witnesses](docs/github-issue-witness.md).
 
 ## Witnesses
 
