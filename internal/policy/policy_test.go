@@ -91,6 +91,65 @@ func TestPolicyGitHubIssueWitnessURL(t *testing.T) {
 	}
 }
 
+func TestPolicyGitLabIssueWitnessURL(t *testing.T) {
+	// Generate keys for the test.
+	origin, err := note.GenerateKey("test-log", note.Ed25519Origin, note.RoleOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness1, err := note.GenerateKey("test-witness", note.Ed25519Cosigner, note.RoleCosigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a policy with a gitlab-issue:// witness URL (nested groups, explicit host).
+	policyContent := "log " + origin.VKey() + "\n" +
+		"witness w1 gitlab-issue://gitlab.example.com/group/subgroup/my-witness " + witness1.VKey() + "\n" +
+		"quorum w1\n"
+
+	dir := t.TempDir()
+	path := writePolicyFile(t, dir, policyContent)
+
+	pol, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Verify log name.
+	if pol.LogName != "test-log" {
+		t.Errorf("LogName: got %q, want %q", pol.LogName, "test-log")
+	}
+
+	// Verify the witness endpoint is stored verbatim.
+	witnesses := pol.Witnesses()
+	if len(witnesses) != 1 {
+		t.Fatalf("expected 1 witness, got %d", len(witnesses))
+	}
+	if witnesses[0].Endpoint != "gitlab-issue://gitlab.example.com/group/subgroup/my-witness" {
+		t.Errorf("Endpoint: got %q, want %q", witnesses[0].Endpoint, "gitlab-issue://gitlab.example.com/group/subgroup/my-witness")
+	}
+
+	// Verify that cosignature verification still works (by key, not by URL).
+	body := "test-log refs/heads/main\nabc123\n"
+	signed, err := note.Sign(body, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cosigLine, err := note.Cosign(signed, witness1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed = note.AppendSignature(signed, cosigLine)
+
+	_, sigLines, err := note.ParseSignedNote(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pol.Verify(body, sigLines); err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+}
+
 func TestPolicyMixedWitnessURLs(t *testing.T) {
 	// Generate keys.
 	origin, err := note.GenerateKey("test-log", note.Ed25519Origin, note.RoleOrigin)
