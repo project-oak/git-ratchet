@@ -55,6 +55,7 @@ type checkpointCmd struct {
 	keyPath    string
 	kmsKey     string
 	repoDir    string
+	mode       string
 }
 
 func (*checkpointCmd) Name() string     { return "checkpoint" }
@@ -88,9 +89,14 @@ func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required unless --kms-key is set)")
 	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if err := validateMode(c.mode); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
 	if c.ref == "" || c.policyPath == "" {
 		fmt.Fprintln(os.Stderr, "error: --ref, --policy, and one of --key or --kms-key are required")
 		fmt.Fprint(os.Stderr, c.Usage())
@@ -141,6 +147,14 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 		return subcommands.ExitFailure
+	}
+
+	if c.mode == modeTlog {
+		if err := checkpointTlog(c.repoDir, c.ref, origin, signer, pol); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return subcommands.ExitFailure
+		}
+		return subcommands.ExitSuccess
 	}
 
 	// Phase 1: Build the signed checkpoint note and ancestry proof.
@@ -477,6 +491,7 @@ type verifyCmd struct {
 	refs       stringSlice
 	policyPath string
 	repoDir    string
+	mode       string
 }
 
 func (*verifyCmd) Name() string     { return "verify" }
@@ -499,9 +514,14 @@ func (c *verifyCmd) SetFlags(f *flag.FlagSet) {
 	f.Var(&c.refs, "ref", "Full ref path to verify (e.g. refs/heads/main) (required, repeatable)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
 }
 
 func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if err := validateMode(c.mode); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
 	if c.policyPath == "" || len(c.refs) == 0 {
 		fmt.Fprintln(os.Stderr, "error: --policy and at least one --ref are required")
 		fmt.Fprint(os.Stderr, c.Usage())
@@ -522,23 +542,7 @@ func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcom
 		return subcommands.ExitFailure
 	}
 
-	refs := []string(c.refs)
-
-	// Verify refs in parallel.
-	type verifyResult struct {
-		ref string
-		err error
-	}
-	results := make([]verifyResult, len(refs))
-	var wg sync.WaitGroup
-	for i, ref := range refs {
-		wg.Add(1)
-		go func(i int, ref string) {
-			defer wg.Done()
-			results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
-		}(i, ref)
-	}
-	wg.Wait()
+	results := verifyRefs(c.repoDir, []string(c.refs), pol, c.mode)
 
 	failed := 0
 	for _, r := range results {
@@ -550,10 +554,51 @@ func (c *verifyCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcom
 		}
 	}
 	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d of %d refs failed verification\n", failed, len(refs))
+		fmt.Fprintf(os.Stderr, "\n%d of %d refs failed verification\n", failed, len(c.refs))
 		return subcommands.ExitFailure
 	}
 	return subcommands.ExitSuccess
+}
+
+// verifyResult pairs a ref with the outcome of verifying it.
+type verifyResult struct {
+	ref string
+	err error
+}
+
+// verifyRefs verifies each ref against the policy in the given mode.
+//
+// The two modes parallelise differently. A git-checkpoint verification is
+// independent per ref, so those run concurrently. A tlog verification shares
+// one log: its checkpoint is verified once up front — a failure there fails
+// every ref — and the per-ref walks then run against that single verified log.
+func verifyRefs(repoDir string, refs []string, pol *policy.Policy, mode string) []verifyResult {
+	results := make([]verifyResult, len(refs))
+
+	if mode == modeTlog {
+		l, err := openVerifiedLog(repoDir, pol)
+		if err != nil {
+			for i, ref := range refs {
+				results[i] = verifyResult{ref, err}
+			}
+			return results
+		}
+		for i, ref := range refs {
+			results[i] = verifyResult{ref, verifySingleRefTlog(repoDir, ref, l)}
+		}
+		return results
+	}
+
+	var wg sync.WaitGroup
+	for i, ref := range refs {
+		wg.Add(1)
+		go func(i int, ref string) {
+			defer wg.Done()
+			results[i] = verifyResult{ref, verifySingleRef(repoDir, ref, pol)}
+		}(i, ref)
+	}
+	wg.Wait()
+	return results
 }
 
 // verifySingleRef verifies a single ref's checkpoint against the policy.
@@ -624,6 +669,7 @@ type auditCmd struct {
 	refs       stringSlice
 	policyPath string
 	repoDir    string
+	mode       string
 }
 
 func (*auditCmd) Name() string     { return "audit" }
@@ -652,9 +698,14 @@ func (c *auditCmd) SetFlags(f *flag.FlagSet) {
 	f.Var(&c.refs, "ref", "Full ref path to verify (e.g. refs/heads/main) (required, repeatable)")
 	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
+	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
 }
 
 func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
+	if err := validateMode(c.mode); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
 	if c.policyPath == "" || len(c.refs) == 0 {
 		fmt.Fprintln(os.Stderr, "error: --policy and at least one --ref are required")
 		fmt.Fprint(os.Stderr, c.Usage())
@@ -686,21 +737,7 @@ func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomm
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 		return subcommands.ExitUsageError
 	}
-	refs := []string(c.refs)
-	type verifyResult struct {
-		ref string
-		err error
-	}
-	results := make([]verifyResult, len(refs))
-	var wg sync.WaitGroup
-	for i, ref := range refs {
-		wg.Add(1)
-		go func(i int, ref string) {
-			defer wg.Done()
-			results[i] = verifyResult{ref, verifySingleRef(c.repoDir, ref, pol)}
-		}(i, ref)
-	}
-	wg.Wait()
+	results := verifyRefs(c.repoDir, []string(c.refs), pol, c.mode)
 	for _, r := range results {
 		if r.err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL verify %s: %v\n", r.ref, r.err)

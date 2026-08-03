@@ -40,12 +40,24 @@ type trustedOrigin struct {
 	sigType note.SigType
 }
 
+// treeState is the witness's stored view of a transparency log: the size and
+// root hash of the largest tree it has cosigned for an origin.
+type treeState struct {
+	Size int    `json:"size"`
+	Root string `json:"root"` // base64-encoded root hash
+}
+
 type Server struct {
 	witnessKey     *note.Signer
 	trustedOrigins map[string]trustedOrigin
 	stateFile      string
+	mode           string
 	mu             sync.RWMutex
-	commits        map[string]string // branch key -> object hash
+
+	// commits is the git-checkpoint mode state: ref key -> object hash.
+	commits map[string]string
+	// trees is the tlog mode state: origin -> tree head.
+	trees map[string]treeState
 }
 
 var (
@@ -56,6 +68,16 @@ var (
 	originsFlag = flag.String("origins", "", "Comma-separated list of trusted origin verifier keys (vkeys)")
 	originsFile = flag.String("origins-file", "", "Path to file containing trusted origin verifier keys (one per line)")
 	stateFile   = flag.String("state-file", "", "Path to JSON file to persist witness state")
+	modeFlag    = flag.String("mode", modeGitCheckpoint, "Checkpoint format to witness: "+modeGitCheckpoint+" or "+modeTlog)
+)
+
+const (
+	// modeGitCheckpoint witnesses git-checkpoint notes, verifying Git commit
+	// ancestry. See docs/witness-protocol.md.
+	modeGitCheckpoint = "git-checkpoint"
+	// modeTlog witnesses C2SP tlog-checkpoint notes, verifying Merkle tree
+	// consistency. See docs/tlog-variant.md.
+	modeTlog = "tlog"
 )
 
 func main() {
@@ -104,11 +126,17 @@ func main() {
 		log.Fatalf("failed to parse trusted origins: %v", err)
 	}
 
+	if *modeFlag != modeGitCheckpoint && *modeFlag != modeTlog {
+		log.Fatalf("error: --mode must be %q or %q, got %q", modeGitCheckpoint, modeTlog, *modeFlag)
+	}
+
 	srv := &Server{
 		witnessKey:     wSigner,
 		trustedOrigins: trustedOrig,
 		stateFile:      *stateFile,
+		mode:           *modeFlag,
 		commits:        make(map[string]string),
+		trees:          make(map[string]treeState),
 	}
 
 	// Load stored state if any.
@@ -116,9 +144,13 @@ func main() {
 		log.Fatalf("failed to load state file: %v", err)
 	}
 
-	http.HandleFunc("/add-checkpoint", srv.handleAddCheckpoint)
+	if srv.mode == modeTlog {
+		http.HandleFunc("/add-checkpoint", srv.handleAddCheckpointTlog)
+	} else {
+		http.HandleFunc("/add-checkpoint", srv.handleAddCheckpoint)
+	}
 
-	log.Printf("Starting witness %q on %s", wSigner.Name, *addr)
+	log.Printf("Starting witness %q on %s (mode %s)", wSigner.Name, *addr, srv.mode)
 	if len(srv.trustedOrigins) > 0 {
 		log.Printf("Trusted origins: %d configured", len(srv.trustedOrigins))
 	} else {
@@ -239,6 +271,10 @@ func (s *Server) handleAddCheckpoint(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, cosigLine)
 }
 
+// The two modes track different things — a commit hash per ref, versus a tree
+// head per origin — so each persists its own state shape. A state file written
+// in one mode is not meaningful in the other, and the witness refuses to
+// reinterpret it rather than silently starting from an empty ratchet.
 func (s *Server) loadState() error {
 	if s.stateFile == "" {
 		return nil
@@ -250,14 +286,29 @@ func (s *Server) loadState() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &s.commits)
+	if s.mode == modeTlog {
+		if err := json.Unmarshal(data, &s.trees); err != nil {
+			return fmt.Errorf("state file is not %s state (was it written by a %s witness?): %w",
+				modeTlog, modeGitCheckpoint, err)
+		}
+		return nil
+	}
+	if err := json.Unmarshal(data, &s.commits); err != nil {
+		return fmt.Errorf("state file is not %s state (was it written by a %s witness?): %w",
+			modeGitCheckpoint, modeTlog, err)
+	}
+	return nil
 }
 
 func (s *Server) saveState() error {
 	if s.stateFile == "" {
 		return nil
 	}
-	data, err := json.MarshalIndent(s.commits, "", "  ")
+	var state any = s.commits
+	if s.mode == modeTlog {
+		state = s.trees
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}

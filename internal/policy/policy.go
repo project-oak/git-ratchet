@@ -253,6 +253,21 @@ func Load(path string) (*Policy, error) {
 	return p, nil
 }
 
+// cosigVerifier verifies a single cosignature line over a note body. The two
+// checkpoint formats differ in how ML-DSA-44 cosignatures are constructed, so
+// the verification functions below are parameterised by one of these.
+type cosigVerifier func(body, sigLine string, pub crypto.PublicKey, sigType note.SigType, cosignerName string) error
+
+// VerifyTlog is Verify for a C2SP tlog-checkpoint body.
+func (p *Policy) VerifyTlog(body string, sigLines []string) error {
+	return p.verify(body, sigLines, note.VerifyTlogCosignature)
+}
+
+// VerifyQuorumTlog is VerifyQuorum for a C2SP tlog-checkpoint body.
+func (p *Policy) VerifyQuorumTlog(body string, sigLines []string) error {
+	return p.verifyQuorum(body, sigLines, note.VerifyTlogCosignature)
+}
+
 // Verify checks that sigLines satisfies the policy: the log signature is valid
 // and the quorum group is satisfied by the witness cosignatures.
 //
@@ -260,6 +275,10 @@ func Load(path string) (*Policy, error) {
 // prefix embedded in the raw signature bytes, providing defence-in-depth
 // against key-confusion attacks where two signers share a name.
 func (p *Policy) Verify(body string, sigLines []string) error {
+	return p.verify(body, sigLines, note.VerifyCosignature)
+}
+
+func (p *Policy) verify(body string, sigLines []string, verifyCosig cosigVerifier) error {
 	if p.LogKey == nil {
 		return fmt.Errorf("policy has no log key; cannot verify log signature")
 	}
@@ -288,7 +307,7 @@ func (p *Policy) Verify(body string, sigLines []string) error {
 		return fmt.Errorf("log signature not found (expected signer %q)", p.LogName)
 	}
 
-	return p.VerifyQuorum(body, sigLines)
+	return p.verifyQuorum(body, sigLines, verifyCosig)
 }
 
 // VerifyQuorum checks that sigLines satisfies the policy's quorum requirement
@@ -296,6 +315,10 @@ func (p *Policy) Verify(body string, sigLines []string) error {
 // origin side (checkpoint-store) where the origin already signed the note
 // itself and only needs to confirm that enough witnesses cosigned.
 func (p *Policy) VerifyQuorum(body string, sigLines []string) error {
+	return p.verifyQuorum(body, sigLines, note.VerifyCosignature)
+}
+
+func (p *Policy) verifyQuorum(body string, sigLines []string, verifyCosig cosigVerifier) error {
 	// "quorum none": no witnesses required.
 	if p.quorum == nil {
 		return nil
@@ -316,7 +339,7 @@ func (p *Policy) VerifyQuorum(body string, sigLines []string) error {
 			if len(raw) < 4 || !bytes.Equal(raw[:4], w.keyHash[:]) {
 				continue
 			}
-			if err := note.VerifyCosignature(body, line, w.Key, w.SigType, w.SignerName); err == nil {
+			if err := verifyCosig(body, line, w.Key, w.SigType, w.SignerName); err == nil {
 				witnessed[w.SignerName] = true
 			}
 			break

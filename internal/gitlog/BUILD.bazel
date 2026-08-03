@@ -12,17 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_go//go:def.bzl", "go_test")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gitlog",
+    srcs = [
+        "gitlog.go",
+        "tilepath.go",
+    ],
+    importpath = "github.com/project-oak/git-ratchet/internal/gitlog",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/gitutil",
+        "//internal/tlog",
+    ],
+)
 
 go_test(
-    name = "e2e_test",
+    name = "gitlog_test",
     srcs = [
-        "integration_test.go",
-        "tlog_test.go",
+        "gitlog_test.go",
+        "tilepath_test.go",
     ],
-    data = [
-        "//:git-ratchet",
-        "//witness",
-    ],
-    deps = ["//internal/note"],
+    embed = [":gitlog"],
+    deps = ["//internal/tlog"],
 )

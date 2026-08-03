@@ -37,6 +37,29 @@ Tag checkpoints do not require ancestry proofs. The witness simply checks that t
 ## Witness policy
 A policy specifies the trusted origin key, witness keys, and quorum. The format follows the [C2SP](https://c2sp.org/) [tlog-policy](https://c2sp.org/tlog-policy) specification, extended with the `github-issue://` witness URI scheme for [GitHub Issue witnesses](docs/github-issue-witness.md).
 
+## Checkpoint modes
+
+git-ratchet supports two checkpoint formats, selected with `--mode`.
+
+| | `git-checkpoint` (default) | `tlog` |
+|---|---|---|
+| What is stored | A signed note per ref, at `refs/checkpoints/*` | A Merkle transparency log of ref updates, at `refs/ratchet/log` |
+| What the witness checks | Git commit ancestry | Merkle tree consistency |
+| Witness protocol | [git-ratchet's own](docs/witness-protocol.md) | C2SP [tlog-witness](https://c2sp.org/tlog-witness) |
+| Third-party witnesses | Must run git-ratchet's witness | Any conforming witness |
+| Rollback is | Refused at cosigning time | Recorded, and rejected by `verify` |
+
+`git-checkpoint` mode gives the stronger guarantee — a witness will not cosign a rollback at all — at the cost of requiring every witness operator to run git-ratchet's own implementation.
+
+`tlog` mode trades that for interoperability: the checkpoint is a standard [tlog-checkpoint](https://c2sp.org/tlog-checkpoint) with no Git-specific fields, so witnesses that have never heard of git-ratchet can cosign it. In exchange, the witness can no longer tell a fast-forward from a rollback, and the ratchet is established by `verify` walking the logged entries — a local, inexpensive walk, since the log ships with the repository.
+
+See [docs/tlog-variant.md](docs/tlog-variant.md) for the full specification and an honest account of what each mode does and does not guarantee.
+
+```bash
+git-ratchet checkpoint --mode tlog --ref refs/heads/main --key origin.key --policy policy.txt
+git-ratchet verify     --mode tlog --ref refs/heads/main --policy policy.txt
+```
+
 ## Witnesses
 
 git-ratchet supports two types of witnesses:
@@ -81,6 +104,8 @@ git-ratchet checkpoint-request \
 
 Produces the add-checkpoint request body (ancestry proof + signed note) without contacting any witnesses. The output can later be submitted to witnesses out-of-band. The origin identity is derived from the key file; use `--origin` to override (required when using `--kms-key`).
 
+The decomposed workflow (`checkpoint-request` / `checkpoint-store`) supports `git-checkpoint` mode only. `tlog` mode requires HTTP witnesses.
+
 ### `git-ratchet checkpoint-store`
 
 ```
@@ -100,6 +125,8 @@ git-ratchet verify --policy <path> --ref <refpath> [--ref <refpath>...] [flags]
 ```
 
 Verifies checkpoint signatures against the policy and confirms each ref still matches the checkpointed commit. The `--ref` flag can be repeated to verify multiple refs.
+
+In `--mode tlog` this additionally walks the logged entries for each ref, checking that branch history only ever moved forward and that each tag was logged exactly once. See [Checkpoint modes](#checkpoint-modes).
 
 ### `git-ratchet audit`
 

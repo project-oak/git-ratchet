@@ -33,7 +33,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -246,10 +245,7 @@ func Cosign(signedNote string, signer *Signer) (string, error) {
 		//   cosignature/v1\n
 		//   time <decimal timestamp>\n
 		//   <checkpoint body>
-		cosignMsg := cosignatureV1Prefix + "\n" +
-			"time " + strconv.FormatUint(timestamp, 10) + "\n" +
-			body
-		sig, err = signer.signer.Sign(nil, []byte(cosignMsg), crypto.Hash(0))
+		sig, err = signer.signer.Sign(nil, []byte(ed25519CosignMessage(timestamp, body)), crypto.Hash(0))
 		if err != nil {
 			return "", fmt.Errorf("Ed25519 cosign: %w", err)
 		}
@@ -429,10 +425,7 @@ func VerifyCosignature(body, sigLine string, pub crypto.PublicKey, sigType SigTy
 			return fmt.Errorf("expected Ed25519 public key")
 		}
 		timestamp := binary.BigEndian.Uint64(raw[4 : 4+8])
-		cosignMsg := cosignatureV1Prefix + "\n" +
-			"time " + strconv.FormatUint(timestamp, 10) + "\n" +
-			body
-		if !ed25519.Verify(edPub, []byte(cosignMsg), raw[4+8:]) {
+		if !ed25519.Verify(edPub, []byte(ed25519CosignMessage(timestamp, body)), raw[4+8:]) {
 			return fmt.Errorf("cosignature verification failed")
 		}
 

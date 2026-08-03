@@ -19,6 +19,7 @@ package gitutil
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -54,13 +55,10 @@ func checkpointRef(sourceRef string) string {
 // the corresponding checkpoint ref at it.
 // ref must be a full ref path, e.g. "refs/heads/main" or "refs/tags/v1.0".
 func StoreCheckpoint(repoDir, ref, checkpoint string) error {
-	cmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
-	cmd.Stdin = strings.NewReader(checkpoint)
-	out, err := cmd.Output()
+	blobHash, err := HashObject(repoDir, checkpoint)
 	if err != nil {
 		return fmt.Errorf("writing checkpoint blob: %w", err)
 	}
-	blobHash := strings.TrimSpace(string(out))
 
 	cpRef := checkpointRef(ref)
 	if _, err := git(repoDir, "update-ref", cpRef, blobHash); err != nil {
@@ -82,6 +80,47 @@ func git(repoDir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 	}
 	return string(out), nil
+}
+
+// Run invokes git in repoDir and returns its combined output.
+func Run(repoDir string, args ...string) (string, error) {
+	return git(repoDir, args...)
+}
+
+// RunWithEnv invokes git in repoDir with additional environment variables
+// (each "KEY=value") appended to the current environment.
+func RunWithEnv(repoDir string, env []string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
+	}
+	return string(out), nil
+}
+
+// HashObject writes content to the object database as a blob and returns its
+// hash.
+func HashObject(repoDir, content string) (string, error) {
+	cmd := exec.Command("git", "-C", repoDir, "hash-object", "-w", "--stdin")
+	cmd.Stdin = strings.NewReader(content)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("writing blob: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// RefExists reports whether a ref is present in the repository.
+func RefExists(repoDir, ref string) bool {
+	_, err := git(repoDir, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// CatFile returns the contents of an object, addressed by any revision syntax
+// git understands (e.g. "refs/ratchet/log:tile/entries/000").
+func CatFile(repoDir, object string) (string, error) {
+	return git(repoDir, "cat-file", "-p", object)
 }
 
 // IsAncestor reports whether ancestor is an ancestor-or-equal of descendant
