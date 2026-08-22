@@ -17,6 +17,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "gitlog",
     srcs = [
+        "entry.go",
         "gitlog.go",
         "tilepath.go",
     ],
@@ -31,6 +32,7 @@ go_library(
 go_test(
     name = "gitlog_test",
     srcs = [
+        "entry_test.go",
         "gitlog_test.go",
         "tilepath_test.go",
     ],

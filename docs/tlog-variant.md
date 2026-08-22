@@ -61,25 +61,122 @@ implement.
 
 ### Entries
 
-A log entry is a single line naming a ref and the object it pointed at:
+Each log entry is one line of compact JSON — the log is a [JSON Lines][] file
+split across bundles. Entries MUST NOT contain a raw newline; compact JSON
+escapes newlines inside strings, so this is automatic.
 
-```
-<refpath> <object-hash>
+[JSON Lines]: https://jsonlines.org/
+
+Every entry carries the type of statement it makes:
+
+```json
+{"type":"git-ratchet/ref-update/v1","ref":"refs/heads/main","object":"4f0f30afb02b71590f0b2e0a67f0b846715e1d04"}
 ```
 
-The ref path MUST begin with `refs/heads/` or `refs/tags/`. The object hash is
-hex-encoded: a commit hash for branches and lightweight tags, the tag object
-hash for annotated tags — the same value `git-checkpoint` mode binds.
+The `type` field is REQUIRED and MUST be a non-empty string. The optional
+`critical` field is discussed under [Evolution](#evolution). All other fields
+belong to the type.
+
+#### `git-ratchet/ref-update/v1`
+
+States that a ref pointed at an object.
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `ref` | string | Full ref path. MUST begin with `refs/heads/` or `refs/tags/`. |
+| `object` | string | Hex object hash, 40 characters (SHA-1) or 64 (SHA-256). A commit hash for branches and lightweight tags; the tag object hash for annotated tags — the same value `git-checkpoint` mode binds. |
 
 Entries record **state, not transitions**. An entry does not name the ref's
-previous value. The log's ordering already establishes what came before, and a
-self-asserted predecessor would be a field that verification must not trust
-anyway.
+previous value. The log's ordering already establishes it, and a self-asserted
+predecessor would be a field that verification must not trust anyway.
 
-The Merkle leaf hash of an entry is `SHA-256(0x00 || <entry line>)`, per
-[RFC 6962][] section 2.1, with the entry line taken without a trailing newline.
+There is deliberately no timestamp. The origin chooses entry contents, so an
+origin-supplied time is an assertion nobody can check; the witness cosignatures
+already carry timestamps from parties that are not the origin.
+
+#### Leaf hashes are taken over stored bytes
+
+The Merkle leaf hash of an entry is `SHA-256(0x00 || <entry bytes>)`, per
+[RFC 6962][] section 2.1, over the exact bytes stored in the bundle, without
+the delimiting newline.
+
+Implementations MUST NOT re-encode a decoded entry to recompute its leaf hash.
+JSON has no canonical form — key order and whitespace are unconstrained — so a
+re-encoding may differ from what was stored and would yield a different leaf,
+invalidating every proof over it. Hash what you read.
+
+This is why canonicalisation is not required of this format: nothing ever needs
+to reproduce someone else's bytes. A verifier hashes the bytes it holds and
+parses those same bytes for meaning.
 
 [RFC 6962]: https://www.rfc-editor.org/rfc/rfc6962.html
+
+#### Parsing rules
+
+Because two verifiers disagreeing about what an entry says would be a split
+view inside a single log, parsing is strict. An implementation MUST reject an
+entry that:
+
+- is not exactly one JSON object, or has trailing content after it;
+- contains the same key twice in any object. JSON parsers disagree about which
+  value wins, so a repeated key is ambiguous rather than merely redundant;
+- lacks a `type`, or whose `type` is not a non-empty string;
+- is of a **recognised** type and carries a field that type does not define.
+
+The last rule is what makes the version in the type string load-bearing: a
+field cannot be added to an existing type, so any change to what an entry means
+arrives as a new type that older implementations do not recognise.
+
+### Evolution
+
+The log is expected to carry statements other than ref updates in future. Two
+rules keep that safe for implementations written before those statements
+existed.
+
+**Version is part of the type.** `git-ratchet/ref-update/v1` is a whole
+identifier, not a name plus a version field. A change in meaning produces
+`…/v2`, which older code does not recognise, rather than a field older code
+would silently ignore.
+
+**Unrecognised types are refused, not skipped.** An implementation encountering
+a type it does not know MUST fail verification, unless the entry carries
+`"critical": false`. The field defaults to **true** when absent, so an entry is
+only ever skippable by explicitly saying so.
+
+Refusing is the conservative direction. A verifier that skipped what it could
+not read would report success on a log whose meaning had moved on without it —
+and the statements most likely to be added are exactly those that *authorise*
+something a verifier would otherwise reject.
+
+#### Worked example: tombstones
+
+A future extension might record that a commit has been excised from history —
+sometimes a legal requirement, and today indistinguishable from the rewriting
+this mode exists to detect. It is **not implemented**; it is described here to
+show how the rules above accommodate it.
+
+Such an entry might look like:
+
+```json
+{"type":"git-ratchet/tombstone/v1","commit":"4f0f30…","ref":"refs/heads/main","reason":"…"}
+```
+
+The rules then give the right behaviour without further design:
+
+- An implementation predating tombstones does not recognise the type, the entry
+  is critical by default, and verification **fails**. That is correct: it cannot
+  tell an authorised excision from an unauthorised rewrite, so it must not
+  pronounce the repository sound. It fails loudly, with a diagnostic naming the
+  type it does not understand.
+- Even without the type rule it would fail anyway, on the ancestry break the
+  excision creates. The two mechanisms agree.
+- An implementation that does understand tombstones can consult the entry when
+  the ancestry walk reaches the break, and apply whatever policy governs them.
+- The tombstone is itself in the log: permanent, cosigned, and undeniable. The
+  excision is transparent even though the commit is gone.
+
+Entry types that are genuinely inert — an annotation, say — set
+`"critical": false` and are skipped by implementations that do not know them.
 
 ### Checkpoint
 
@@ -194,15 +291,17 @@ anchored to a specific size. The recovery is a single extra request.
 2. Check the checkpoint's origin matches the policy's log name.
 3. Check the entries present reproduce the checkpoint's size and root hash
    exactly. Entries beyond the checkpoint are unwitnessed; a mismatch fails.
-4. **Walk the entries for each requested ref**, in log order:
+4. Refuse the log if it contains an entry of an unrecognised critical type, as
+   described under [Evolution](#evolution).
+5. **Walk the ref-update entries for each requested ref**, in log order:
    - **Branches**: each logged commit MUST be a descendant of the one logged
      before it. A break means history was rewritten.
    - **Tags**: a tag MUST appear exactly once. A second entry is a move,
      whatever object it names.
-5. Compare the ref's current value against its latest entry: a branch MUST be
+6. Compare the ref's current value against its latest entry: a branch MUST be
    at or behind it, a tag MUST match it exactly.
 
-Step 4 is the ratchet. It replaces what the witness used to do, and it is
+Step 5 is the ratchet. It replaces what the witness used to do, and it is
 always performed — there is no cheaper verification path, because a cheaper
 one would not be safe.
 

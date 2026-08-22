@@ -51,40 +51,6 @@ const EntriesPerBundle = 256
 // checkpointPath is where the cosigned checkpoint lives in the log tree.
 const checkpointPath = "checkpoint"
 
-// Entry is a single logged statement: the object a ref pointed at when the
-// entry was appended.
-//
-// Entries record state, not transitions. The log's own ordering establishes
-// what the previous state was, so carrying a self-asserted predecessor in the
-// entry would add a field that verification must not trust anyway.
-type Entry struct {
-	Ref  string // full ref path, e.g. "refs/heads/main"
-	Hash string // hex object hash the ref pointed at
-}
-
-// String renders the entry's canonical form, which is what gets hashed into
-// the Merkle tree and written to the entry bundle.
-func (e Entry) String() string {
-	return e.Ref + " " + e.Hash
-}
-
-// LeafHash returns the RFC 6962 leaf hash of the entry.
-func (e Entry) LeafHash() tlog.Hash {
-	return tlog.HashLeaf([]byte(e.String()))
-}
-
-// ParseEntry parses an entry's canonical form.
-func ParseEntry(s string) (Entry, error) {
-	fields := strings.Fields(s)
-	if len(fields) != 2 {
-		return Entry{}, fmt.Errorf("malformed log entry %q: expected 2 fields, got %d", s, len(fields))
-	}
-	if _, err := gitutil.ParseRefKind(fields[0]); err != nil {
-		return Entry{}, fmt.Errorf("malformed log entry %q: %w", s, err)
-	}
-	return Entry{Ref: fields[0], Hash: fields[1]}, nil
-}
-
 // Log is an in-memory view of the repository's transparency log.
 type Log struct {
 	repoDir string
@@ -162,7 +128,7 @@ func readEntries(repoDir string) ([]Entry, error) {
 			if line == "" {
 				continue
 			}
-			e, err := ParseEntry(line)
+			e, err := ParseEntry([]byte(line))
 			if err != nil {
 				return nil, err
 			}
@@ -213,25 +179,39 @@ func (l *Log) Append(e Entry) {
 	l.entries = append(l.entries, e)
 }
 
-// EntriesFor returns every entry for a ref, in log order.
-func (l *Log) EntriesFor(ref string) []Entry {
-	var out []Entry
-	for _, e := range l.entries {
-		if e.Ref == ref {
-			out = append(out, e)
+// RefUpdates returns the decoded ref-update entries naming a ref, in log
+// order. Entries of other types are not included.
+func (l *Log) RefUpdates(ref string) ([]RefUpdate, error) {
+	var out []RefUpdate
+	for i, e := range l.entries {
+		if e.Type != TypeRefUpdate {
+			continue
+		}
+		ru, err := e.AsRefUpdate()
+		if err != nil {
+			return nil, fmt.Errorf("log entry %d: %w", i, err)
+		}
+		if ru.Ref == ref {
+			out = append(out, ru)
 		}
 	}
-	return out
+	return out, nil
 }
 
-// Latest returns the most recent entry for a ref.
-func (l *Log) Latest(ref string) (Entry, bool) {
-	for i := len(l.entries) - 1; i >= 0; i-- {
-		if l.entries[i].Ref == ref {
-			return l.entries[i], true
+// CheckEntryTypes reports an error if the log contains a critical entry whose
+// type this implementation does not understand.
+//
+// Refusing rather than skipping is what keeps an older verifier from reporting
+// success on a log whose meaning has moved on without it. A future entry type
+// that is genuinely safe to ignore can say so with "critical": false.
+func (l *Log) CheckEntryTypes() error {
+	for i, e := range l.entries {
+		if !e.Known() && e.Critical {
+			return fmt.Errorf("log entry %d has unrecognised critical type %q: "+
+				"this log was written by a newer git-ratchet and cannot be verified by this one", i, e.Type)
 		}
 	}
-	return Entry{}, false
+	return nil
 }
 
 // ConsistencyProofFrom returns the proof that the log at size m is a prefix of
@@ -269,7 +249,7 @@ func (l *Log) Save(checkpoint, message string) error {
 
 		var b strings.Builder
 		for _, e := range l.entries[start:end] {
-			b.WriteString(e.String())
+			b.Write(e.raw)
 			b.WriteByte('\n')
 		}
 		blob, err := gitutil.HashObject(l.repoDir, b.String())

@@ -82,9 +82,17 @@ func checkpointTlog(repoDir, ref, origin string, signer *note.Signer, pol *polic
 	// Appending an entry identical to the ref's latest logged state would grow
 	// the log without saying anything new, so re-checkpointing an unchanged
 	// ref just refreshes the cosignatures on the current head.
+	updates, err := l.RefUpdates(ref)
+	if err != nil {
+		return err
+	}
 	appended := false
-	if latest, ok := l.Latest(ref); !ok || latest.Hash != objectHash {
-		l.Append(gitlog.Entry{Ref: ref, Hash: objectHash})
+	if len(updates) == 0 || updates[len(updates)-1].Object != objectHash {
+		entry, err := gitlog.NewRefUpdate(ref, objectHash)
+		if err != nil {
+			return err
+		}
+		l.Append(entry)
 		appended = true
 	}
 	if l.Size() == 0 {
@@ -209,6 +217,12 @@ func openVerifiedLog(repoDir string, pol *policy.Policy) (*gitlog.Log, error) {
 	if l.Root() != cp.Root {
 		return nil, fmt.Errorf("log entries do not reproduce the cosigned root hash")
 	}
+
+	// Refuse a log containing statements this implementation cannot interpret,
+	// rather than verifying the part of it that happens to be legible.
+	if err := l.CheckEntryTypes(); err != nil {
+		return nil, err
+	}
 	return l, nil
 }
 
@@ -223,7 +237,10 @@ func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
 		return err
 	}
 
-	entries := l.EntriesFor(ref)
+	entries, err := l.RefUpdates(ref)
+	if err != nil {
+		return err
+	}
 	if len(entries) == 0 {
 		return fmt.Errorf("no log entries for ref %q", ref)
 	}
@@ -234,12 +251,12 @@ func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
 		// whatever object it names.
 		if len(entries) > 1 {
 			return fmt.Errorf("tag was logged %d times (first %s, last %s); tags must be logged exactly once",
-				len(entries), entries[0].Hash, entries[len(entries)-1].Hash)
+				len(entries), entries[0].Object, entries[len(entries)-1].Object)
 		}
 	case gitutil.RefBranch:
 		// Each logged state must descend from the one before it.
 		for i := 1; i < len(entries); i++ {
-			prev, curr := entries[i-1].Hash, entries[i].Hash
+			prev, curr := entries[i-1].Object, entries[i].Object
 			ok, err := gitutil.IsAncestor(repoDir, prev, curr)
 			if err != nil {
 				return fmt.Errorf("cannot check ancestry from logged commit %s to %s "+
@@ -260,18 +277,18 @@ func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
 	}
 
 	if kind == gitutil.RefTag {
-		if localHash != latest.Hash {
-			return fmt.Errorf("tag does not match log (current: %s, logged: %s)", localHash, latest.Hash)
+		if localHash != latest.Object {
+			return fmt.Errorf("tag does not match log (current: %s, logged: %s)", localHash, latest.Object)
 		}
 		return nil
 	}
 
-	ok, err := gitutil.IsAncestor(repoDir, localHash, latest.Hash)
+	ok, err := gitutil.IsAncestor(repoDir, localHash, latest.Object)
 	if err != nil {
 		return fmt.Errorf("checking ancestry: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("local commit %s is ahead of the latest logged commit %s", localHash, latest.Hash)
+		return fmt.Errorf("local commit %s is ahead of the latest logged commit %s", localHash, latest.Object)
 	}
 	return nil
 }
