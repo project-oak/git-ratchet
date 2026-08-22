@@ -251,6 +251,29 @@ permanent, cosigned, and undeniable; the log cannot be rewritten to remove it
 without losing witness cosignatures. Detection moves from the witness to the
 verifier, and the verifier can do it with what it already has.
 
+## Implementation
+
+The Merkle tree comes from [`github.com/transparency-dev/merkle`][merkle], maintained
+by the authors of the transparency-log specifications this mode implements.
+Consistency verification is what a witness runs to decide whether to cosign, so
+it is not somewhere to carry a bespoke implementation.
+
+[Tessera][] was considered and not used. Tessera is a log *server* framework —
+batching, sequencing, antispam, and storage drivers for GCS, S3, MySQL and
+POSIX — and importing its core links 70 non-standard-library packages, against
+3 for `merkle/proof`. git-ratchet appends at most one entry per push, from a
+CLI, into a Git ref. Almost none of that machinery applies, and adopting it
+would mean writing a storage driver whose unit of work is rewriting a Git tree.
+
+`internal/tlog` is a thin adapter over the library. It works in fixed-size hash
+values rather than byte slices, and resolves proof nodes from the in-memory
+entry list, because the library's proof generation reports which nodes a proof
+needs and leaves fetching them to the caller — it is built for logs whose nodes
+live in tiled storage, which these do not.
+
+[merkle]: https://github.com/transparency-dev/merkle
+[Tessera]: https://github.com/transparency-dev/tessera
+
 ## Scope
 
 The following are not implemented in this mode:

@@ -57,18 +57,6 @@ func TestRootSingleLeaf(t *testing.T) {
 	}
 }
 
-// TestSplitPoint checks the largest-power-of-two-below-n helper, which decides
-// where every interior node splits.
-func TestSplitPoint(t *testing.T) {
-	for _, tc := range []struct{ n, want int }{
-		{2, 1}, {3, 2}, {4, 2}, {5, 4}, {7, 4}, {8, 4}, {9, 8}, {16, 8}, {17, 16},
-	} {
-		if got := splitPoint(tc.n); got != tc.want {
-			t.Errorf("splitPoint(%d) = %d, want %d", tc.n, got, tc.want)
-		}
-	}
-}
-
 // TestInclusionProofRoundTrip generates and verifies an inclusion proof for
 // every leaf of every tree size up to 64.
 func TestInclusionProofRoundTrip(t *testing.T) {
