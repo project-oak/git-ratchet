@@ -61,30 +61,31 @@ implement.
 
 ### Entries
 
-Each log entry is one line of compact JSON — the log is a [JSON Lines][] file
-split across bundles. Entries MUST NOT contain a raw newline; compact JSON
-escapes newlines inside strings, so this is automatic.
+An entry is a sequence of newline-terminated lines. The first line names the
+type of statement the entry makes; the remaining lines belong to that type:
 
-[JSON Lines]: https://jsonlines.org/
-
-Every entry carries the type of statement it makes:
-
-```json
-{"type":"git-ratchet/ref-update/v1","ref":"refs/heads/main","object":"4f0f30afb02b71590f0b2e0a67f0b846715e1d04"}
+```
+ref-record/v1
+refs/heads/main 4f0f30afb02b71590f0b2e0a67f0b846715e1d04
 ```
 
-The `type` field is REQUIRED and MUST be a non-empty string. The optional
-`critical` field is discussed under [Evolution](#evolution). All other fields
-belong to the type.
+Bundles length-prefix entries (see [Storage](#storage)), so an entry is an
+opaque byte string as far as the log is concerned. It may contain newlines
+freely, and a type may define as many lines as it needs.
 
-#### `git-ratchet/ref-update/v1`
+#### `ref-record/v1`
 
-States that a ref pointed at an object.
+States that a ref pointed at an object. Exactly two lines:
 
-| Field | Type | Meaning |
-| :--- | :--- | :--- |
-| `ref` | string | Full ref path. MUST begin with `refs/heads/` or `refs/tags/`. |
-| `object` | string | Hex object hash, 40 characters (SHA-1) or 64 (SHA-256). A commit hash for branches and lightweight tags; the tag object hash for annotated tags — the same value `git-checkpoint` mode binds. |
+```
+ref-record/v1
+<ref> <object>
+```
+
+`<ref>` is a full ref path and MUST begin with `refs/heads/` or `refs/tags/`.
+`<object>` is a lowercase hex object hash of 40 characters (SHA-1) or 64
+(SHA-256): a commit hash for branches and lightweight tags, the tag object hash
+for annotated tags — the same value `git-checkpoint` mode binds.
 
 Entries record **state, not transitions**. An entry does not name the ref's
 previous value. The log's ordering already establishes it, and a self-asserted
@@ -94,89 +95,79 @@ There is deliberately no timestamp. The origin chooses entry contents, so an
 origin-supplied time is an assertion nobody can check; the witness cosignatures
 already carry timestamps from parties that are not the origin.
 
-#### Leaf hashes are taken over stored bytes
+#### Canonical encoding
 
 The Merkle leaf hash of an entry is `SHA-256(0x00 || <entry bytes>)`, per
-[RFC 6962][] section 2.1, over the exact bytes stored in the bundle, without
-the delimiting newline.
+[RFC 6962][] section 2.1, over the entry's bytes exactly as stored — the
+bundle's length prefix is framing and is not hashed.
 
-Implementations MUST NOT re-encode a decoded entry to recompute its leaf hash.
-JSON has no canonical form — key order and whitespace are unconstrained — so a
-re-encoding may differ from what was stored and would yield a different leaf,
-invalidating every proof over it. Hash what you read.
+The grammar admits exactly one byte string per statement, so the same statement
+always produces the same leaf. Implementations MUST reject an entry that
+deviates from it:
 
-This is why canonicalisation is not required of this format: nothing ever needs
-to reproduce someone else's bytes. A verifier hashes the bytes it holds and
-parses those same bytes for meaning.
+- every line, including the last, is terminated by a single `\n`;
+- no carriage returns anywhere;
+- no leading or trailing whitespace on any line;
+- exactly one space between fields on a line;
+- hex is lowercase;
+- the type line is non-empty and contains no whitespace.
+
+Being tolerant here would defeat the point of the format. Two encoders that
+disagree about, say, whether a trailing space is permitted would produce
+different bytes for the same statement, and therefore different leaves.
 
 [RFC 6962]: https://www.rfc-editor.org/rfc/rfc6962.html
 
-#### Parsing rules
-
-Because two verifiers disagreeing about what an entry says would be a split
-view inside a single log, parsing is strict. An implementation MUST reject an
-entry that:
-
-- is not exactly one JSON object, or has trailing content after it;
-- contains the same key twice in any object. JSON parsers disagree about which
-  value wins, so a repeated key is ambiguous rather than merely redundant;
-- lacks a `type`, or whose `type` is not a non-empty string;
-- is of a **recognised** type and carries a field that type does not define.
-
-The last rule is what makes the version in the type string load-bearing: a
-field cannot be added to an existing type, so any change to what an entry means
-arrives as a new type that older implementations do not recognise.
-
 ### Evolution
 
-The log is expected to carry statements other than ref updates in future. Two
-rules keep that safe for implementations written before those statements
-existed.
+The version is part of the type identifier — `ref-record/v1` is one string, not
+a name and a version field — and there is no second version for the framing. A
+change in what a statement means produces a new type identifier. The framing
+itself, first line names the type and the rest is its payload, is thin enough
+that a change to it can be announced the same way.
 
-**Version is part of the type.** `git-ratchet/ref-update/v1` is a whole
-identifier, not a name plus a version field. A change in meaning produces
-`…/v2`, which older code does not recognise, rather than a field older code
-would silently ignore.
+**Entries of an unrecognised type are skipped.** An implementation reading a
+type it does not know ignores that entry and carries on.
 
-**Unrecognised types are refused, not skipped.** An implementation encountering
-a type it does not know MUST fail verification, unless the entry carries
-`"critical": false`. The field defaults to **true** when absent, so an entry is
-only ever skippable by explicitly saying so.
+This is safe because verification does not merely read the log: it reconciles
+the log against the repository. An implementation that skips entries has an
+idea of the latest logged state that lags the real ref, and a ref ahead of the
+log is already a failure. Skipping cannot turn a bad repository into a good
+verdict for any statement that records state.
 
-Refusing is the conservative direction. A verifier that skipped what it could
-not read would report success on a log whose meaning had moved on without it —
-and the statements most likely to be added are exactly those that *authorise*
-something a verifier would otherwise reject.
+It would not be safe for a statement that *withdrew* something previously
+recorded — skipping that would turn a revocation into silence. Such a statement
+cannot be added compatibly later, because every existing implementation would
+already skip it. No marker is reserved for one. That is a deliberate trade: the
+cost of complicating the format now was judged higher than the likelihood of
+ever needing it.
 
 #### Worked example: tombstones
 
 A future extension might record that a commit has been excised from history —
-sometimes a legal requirement, and today indistinguishable from the rewriting
-this mode exists to detect. It is **not implemented**; it is described here to
-show how the rules above accommodate it.
+sometimes a legal requirement, and otherwise indistinguishable from the
+rewriting this mode exists to detect. It is **not implemented**; it is set out
+here to show how the rules above accommodate a new type.
 
-Such an entry might look like:
-
-```json
-{"type":"git-ratchet/tombstone/v1","commit":"4f0f30…","ref":"refs/heads/main","reason":"…"}
+```
+tombstone/v1
+4f0f30afb02b71590f0b2e0a67f0b846715e1d04 refs/heads/main
+removed under a legal request
 ```
 
-The rules then give the right behaviour without further design:
+An implementation predating tombstones skips the entry, then walks the
+ref-record entries for `refs/heads/main` and finds a commit that does not
+descend from its predecessor. It fails, reporting rewritten history. That is
+the correct outcome: it cannot tell an authorised excision from an
+unauthorised rewrite, so it must not pronounce the repository sound.
 
-- An implementation predating tombstones does not recognise the type, the entry
-  is critical by default, and verification **fails**. That is correct: it cannot
-  tell an authorised excision from an unauthorised rewrite, so it must not
-  pronounce the repository sound. It fails loudly, with a diagnostic naming the
-  type it does not understand.
-- Even without the type rule it would fail anyway, on the ancestry break the
-  excision creates. The two mechanisms agree.
-- An implementation that does understand tombstones can consult the entry when
-  the ancestry walk reaches the break, and apply whatever policy governs them.
-- The tombstone is itself in the log: permanent, cosigned, and undeniable. The
-  excision is transparent even though the commit is gone.
+An implementation that understands tombstones consults the entry when the walk
+reaches the break, and applies whatever policy governs them. Either way the
+tombstone is in the log: permanent, cosigned, and undeniable, so the excision
+is transparent even though the commit is gone.
 
-Entry types that are genuinely inert — an annotation, say — set
-`"critical": false` and are skipped by implementations that do not know them.
+Note the multi-line payload with free text. The length-prefixed bundle framing
+carries it with no escaping, so a type is not constrained to fit on one line.
 
 ### Checkpoint
 
@@ -214,11 +205,21 @@ checkpoint            the cosigned tlog-checkpoint
 tile/entries/<path>   entry bundles, 256 entries each
 ```
 
-Entry bundle paths follow the tlog-tiles scheme: the bundle index in base-1000
-groups of three digits joined by `/`, every group but the last prefixed with
-`x`, and a `.p/<width>` suffix while the bundle is not yet full. So bundle 0
-is `tile/entries/000` once full and `tile/entries/000.p/17` at seventeen
-entries; bundle 1234567 is `tile/entries/x001/x234/567`.
+Entry bundles use the tlog-tiles paths and encoding. Paths carry the bundle
+index in base-1000 groups of three digits joined by `/`, every group but the
+last prefixed with `x`, and a `.p/<width>` suffix while the bundle is not yet
+full: bundle 0 is `tile/entries/000` once full and `tile/entries/000.p/17` at
+seventeen entries; bundle 1234567 is `tile/entries/x001/x234/567`.
+
+Within a bundle, entries are concatenated, each prefixed with its length as a
+big-endian `uint16`. Entries are therefore opaque byte strings, limited to
+65535 bytes. Paths and decoding both come from the reference implementation in
+`tessera/api`, so a tlog-tiles client can read these bundles directly.
+
+One consequence worth knowing: the length prefixes contain NUL bytes, so Git
+treats bundle blobs as binary and `git log -p` on the log ref reports "Binary
+files differ" rather than showing added entries. `git cat-file -p` still prints
+them, and the entries themselves are plain text.
 
 Storing the log as a commit rather than a blob has a useful consequence: the
 log ref can only be advanced by a fast-forward push, so an ordinary Git server
@@ -291,17 +292,16 @@ anchored to a specific size. The recovery is a single extra request.
 2. Check the checkpoint's origin matches the policy's log name.
 3. Check the entries present reproduce the checkpoint's size and root hash
    exactly. Entries beyond the checkpoint are unwitnessed; a mismatch fails.
-4. Refuse the log if it contains an entry of an unrecognised critical type, as
-   described under [Evolution](#evolution).
-5. **Walk the ref-update entries for each requested ref**, in log order:
+4. **Walk the ref-record entries for each requested ref**, in log order.
+   Entries of any other type, including unrecognised ones, are skipped:
    - **Branches**: each logged commit MUST be a descendant of the one logged
      before it. A break means history was rewritten.
    - **Tags**: a tag MUST appear exactly once. A second entry is a move,
      whatever object it names.
-6. Compare the ref's current value against its latest entry: a branch MUST be
+5. Compare the ref's current value against its latest entry: a branch MUST be
    at or behind it, a tag MUST match it exactly.
 
-Step 5 is the ratchet. It replaces what the witness used to do, and it is
+Step 4 is the ratchet. It replaces what the witness used to do, and it is
 always performed — there is no cheaper verification path, because a cheaper
 one would not be safe.
 
@@ -363,6 +363,11 @@ POSIX — and importing its core links 70 non-standard-library packages, against
 3 for `merkle/proof`. git-ratchet appends at most one entry per push, from a
 CLI, into a Git ref. Almost none of that machinery applies, and adopting it
 would mean writing a storage driver whose unit of work is rewriting a Git tree.
+
+Entry bundle paths and decoding come from `tessera/api` and `tessera/api/layout`
+— 2 packages with no external dependencies, and separable from the Tessera
+machinery discussed above. Hand-rolling that layer produced bundles no
+tlog-tiles client could read.
 
 `internal/tlog` is a thin adapter over the library. It works in fixed-size hash
 values rather than byte slices, and resolves proof nodes from the in-memory

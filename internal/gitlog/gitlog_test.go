@@ -61,12 +61,12 @@ func obj(label string) string {
 	return h + strings.Repeat("0", 40-len(h))
 }
 
-// mustRefUpdate builds a ref-update entry or fails the test.
-func mustRefUpdate(t *testing.T, ref, object string) Entry {
+// mustRefRecord builds a ref-update entry or fails the test.
+func mustRefRecord(t *testing.T, ref, object string) Entry {
 	t.Helper()
-	e, err := NewRefUpdate(ref, object)
+	e, err := NewRefRecord(ref, object)
 	if err != nil {
-		t.Fatalf("NewRefUpdate(%q, %q): %v", ref, object, err)
+		t.Fatalf("NewRefRecord(%q, %q): %v", ref, object, err)
 	}
 	return e
 }
@@ -102,8 +102,8 @@ func TestAppendAndReopen(t *testing.T) {
 	dir := initRepo(t)
 
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aaaa")))
-	l.Append(mustRefUpdate(t, "refs/tags/v1.0.0", obj("bbbb")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("aaaa")))
+	l.Append(mustRefRecord(t, "refs/tags/v1.0.0", obj("bbbb")))
 	if err := l.Save("checkpoint-body", "log: two entries"); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -120,11 +120,11 @@ func TestAppendAndReopen(t *testing.T) {
 		t.Errorf("StoredCheckpoint() = %q", reopened.StoredCheckpoint())
 	}
 	entries := reopened.Entries()
-	for i, want := range []RefUpdate{
+	for i, want := range []RefRecord{
 		{Ref: "refs/heads/main", Object: obj("aaaa")},
 		{Ref: "refs/tags/v1.0.0", Object: obj("bbbb")},
 	} {
-		got, err := entries[i].AsRefUpdate()
+		got, err := entries[i].AsRefRecord()
 		if err != nil {
 			t.Fatalf("entry %d: %v", i, err)
 		}
@@ -140,14 +140,14 @@ func TestSaveIsFastForward(t *testing.T) {
 	dir := initRepo(t)
 
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aaaa")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("aaaa")))
 	if err := l.Save("cp1", "first"); err != nil {
 		t.Fatal(err)
 	}
 	first := l.Head()
 
 	l2 := mustOpen(t, dir)
-	l2.Append(mustRefUpdate(t, "refs/heads/main", obj("bbbb")))
+	l2.Append(mustRefRecord(t, "refs/heads/main", obj("bbbb")))
 	if err := l2.Save("cp2", "second"); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestSaveRejectsConcurrentAdvance(t *testing.T) {
 	dir := initRepo(t)
 
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aaaa")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("aaaa")))
 	if err := l.Save("cp1", "first"); err != nil {
 		t.Fatal(err)
 	}
@@ -178,12 +178,12 @@ func TestSaveRejectsConcurrentAdvance(t *testing.T) {
 	writerA := mustOpen(t, dir)
 	writerB := mustOpen(t, dir)
 
-	writerA.Append(mustRefUpdate(t, "refs/heads/main", obj("bbbb")))
+	writerA.Append(mustRefRecord(t, "refs/heads/main", obj("bbbb")))
 	if err := writerA.Save("cp2", "from A"); err != nil {
 		t.Fatalf("first writer should succeed: %v", err)
 	}
 
-	writerB.Append(mustRefUpdate(t, "refs/heads/other", obj("cccc")))
+	writerB.Append(mustRefRecord(t, "refs/heads/other", obj("cccc")))
 	if err := writerB.Save("cp2b", "from B"); err == nil {
 		t.Error("expected the stale writer's save to be rejected")
 	}
@@ -193,7 +193,7 @@ func TestSaveRejectsConcurrentAdvance(t *testing.T) {
 	if final.Size() != 2 {
 		t.Fatalf("Size() = %d, want 2", final.Size())
 	}
-	mains, err := final.RefUpdates("refs/heads/main")
+	mains, err := final.RefRecords("refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestBundleRollover(t *testing.T) {
 	const total = EntriesPerBundle + 5
 	l := mustOpen(t, dir)
 	for i := 0; i < total; i++ {
-		l.Append(mustRefUpdate(t, "refs/heads/main", obj(fmt.Sprintf("%04x", i))))
+		l.Append(mustRefRecord(t, "refs/heads/main", obj(fmt.Sprintf("%04x", i))))
 		if err := l.Save("cp", fmt.Sprintf("entry %d", i)); err != nil {
 			t.Fatalf("Save at %d: %v", i, err)
 		}
@@ -223,7 +223,7 @@ func TestBundleRollover(t *testing.T) {
 		t.Fatalf("Size() = %d, want %d", reopened.Size(), total)
 	}
 	for i, e := range reopened.Entries() {
-		ru, err := e.AsRefUpdate()
+		ru, err := e.AsRefRecord()
 		if err != nil {
 			t.Fatalf("entry %d: %v", i, err)
 		}
@@ -246,30 +246,30 @@ func TestBundleRollover(t *testing.T) {
 	}
 }
 
-func TestRefUpdatesFiltersByRef(t *testing.T) {
+func TestRefRecordsFiltersByRef(t *testing.T) {
 	dir := initRepo(t)
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("a1")))
-	l.Append(mustRefUpdate(t, "refs/heads/dev", obj("b1")))
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("a2")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("a1")))
+	l.Append(mustRefRecord(t, "refs/heads/dev", obj("b1")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("a2")))
 	if err := l.Save("cp", "entries"); err != nil {
 		t.Fatal(err)
 	}
 
-	mains, err := l.RefUpdates("refs/heads/main")
+	mains, err := l.RefRecords("refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(mains) != 2 || mains[0].Object != obj("a1") || mains[1].Object != obj("a2") {
-		t.Errorf("RefUpdates(main) = %+v", mains)
+		t.Errorf("RefRecords(main) = %+v", mains)
 	}
 
-	absent, err := l.RefUpdates("refs/heads/absent")
+	absent, err := l.RefRecords("refs/heads/absent")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(absent) != 0 {
-		t.Errorf("RefUpdates(absent) = %+v, want none", absent)
+		t.Errorf("RefRecords(absent) = %+v, want none", absent)
 	}
 }
 
@@ -279,7 +279,7 @@ func TestProofsAgainstStoredLog(t *testing.T) {
 	dir := initRepo(t)
 	l := mustOpen(t, dir)
 	for i := 0; i < 20; i++ {
-		l.Append(mustRefUpdate(t, "refs/heads/main", obj(fmt.Sprintf("%04x", i))))
+		l.Append(mustRefRecord(t, "refs/heads/main", obj(fmt.Sprintf("%04x", i))))
 	}
 	if err := l.Save("cp", "twenty entries"); err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestProofsAgainstStoredLog(t *testing.T) {
 func TestRootAtOutOfRange(t *testing.T) {
 	dir := initRepo(t)
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aa")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("aa")))
 	if _, err := l.RootAt(2); err == nil {
 		t.Error("expected an error for a size beyond the log")
 	}
@@ -326,18 +326,20 @@ func TestRootAtOutOfRange(t *testing.T) {
 	}
 }
 
-// TestCheckEntryTypesFailsClosed covers forward compatibility at the log
-// level: a log carrying a statement this implementation cannot interpret must
-// be refused outright, not verified for the part of it that happens to be
-// legible.
-func TestCheckEntryTypesFailsClosed(t *testing.T) {
+// TestUnknownTypesAreSkipped pins the forward-compatibility rule: an entry of
+// a type this implementation does not recognise contributes its leaf to the
+// tree but is otherwise ignored.
+func TestUnknownTypesAreSkipped(t *testing.T) {
 	dir := initRepo(t)
 	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aaaa")))
+	l.Append(mustRefRecord(t, "refs/heads/main", obj("aaaa")))
 
-	future, err := ParseEntry([]byte(`{"type":"git-ratchet/tombstone/v1","commit":"` + obj("dead") + `"}`))
+	future, err := ParseEntry([]byte("tombstone/v1\n" + obj("dead") + " refs/heads/main\nlegal request\n"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("an unknown type must still parse: %v", err)
+	}
+	if future.Known() {
+		t.Error("tombstone should not be a known type in this implementation")
 	}
 	l.Append(future)
 	if err := l.Save("cp", "with a future entry"); err != nil {
@@ -346,44 +348,13 @@ func TestCheckEntryTypesFailsClosed(t *testing.T) {
 
 	reopened := mustOpen(t, dir)
 	if reopened.Size() != 2 {
-		t.Fatalf("Size() = %d, want 2", reopened.Size())
+		t.Fatalf("Size() = %d, want 2: an unknown entry still occupies a leaf", reopened.Size())
 	}
-	err = reopened.CheckEntryTypes()
-	if err == nil {
-		t.Fatal("expected an unrecognised critical entry to be refused")
-	}
-	if !strings.Contains(err.Error(), "unrecognised critical type") {
-		t.Errorf("unexpected diagnostic: %v", err)
-	}
-
-	// The ref-update entries alongside it are still readable; refusing is a
-	// policy decision made by the verifier, not a parse failure.
-	mains, err := reopened.RefUpdates("refs/heads/main")
+	mains, err := reopened.RefRecords("refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(mains) != 1 {
-		t.Errorf("RefUpdates(main) = %+v, want one entry", mains)
-	}
-}
-
-// TestCheckEntryTypesAllowsNonCritical checks the escape hatch for entry types
-// a future version may add that are genuinely safe to skip.
-func TestCheckEntryTypesAllowsNonCritical(t *testing.T) {
-	dir := initRepo(t)
-	l := mustOpen(t, dir)
-	l.Append(mustRefUpdate(t, "refs/heads/main", obj("aaaa")))
-
-	optional, err := ParseEntry([]byte(`{"type":"git-ratchet/annotation/v1","critical":false,"note":"hi"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.Append(optional)
-	if err := l.Save("cp", "with an optional entry"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := mustOpen(t, dir).CheckEntryTypes(); err != nil {
-		t.Errorf("a non-critical unknown entry should be tolerated: %v", err)
+		t.Errorf("RefRecords(main) = %+v, want only the ref-record entry", mains)
 	}
 }

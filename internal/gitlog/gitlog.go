@@ -20,11 +20,13 @@
 //	checkpoint            latest cosigned tlog-checkpoint
 //	tile/entries/<path>   entry bundles, 256 entries each
 //
-// Entry bundles follow the tlog-tiles path scheme, so the entries a third
-// party needs to reconstruct the tree are laid out where a tlog-tiles client
-// expects them. Hash tiles are not stored: every consumer of a git-ratchet log
-// already has the whole log locally (it arrives with the repository), so the
-// tree is recomputed from the entries rather than served from tiles.
+// Entry bundles use the tlog-tiles paths and encoding, via the reference
+// implementation in tessera/api, so a tlog-tiles client can read them.
+//
+// Hash tiles are not stored: every consumer of a git-ratchet log already has
+// the whole log locally (it arrives with the repository), and a witness is
+// sent its consistency proof in the request, so the tree is recomputed from
+// the entries rather than served from tiles.
 //
 // Storing the log as a commit rather than a blob buys one thing for free: the
 // log ref can only be advanced by a fast-forward push, so an ordinary Git
@@ -32,10 +34,14 @@
 package gitlog
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/transparency-dev/tessera/api"
+	"github.com/transparency-dev/tessera/api/layout"
 
 	"github.com/project-oak/git-ratchet/internal/gitutil"
 	"github.com/project-oak/git-ratchet/internal/tlog"
@@ -44,12 +50,15 @@ import (
 // LogRef is the ref holding the transparency log.
 const LogRef = "refs/ratchet/log"
 
-// EntriesPerBundle is the number of log entries in a full entry bundle, per
-// the tlog-tiles tile height of 8.
-const EntriesPerBundle = 256
+// EntriesPerBundle is the number of log entries in a full entry bundle.
+const EntriesPerBundle = layout.EntryBundleWidth
 
 // checkpointPath is where the cosigned checkpoint lives in the log tree.
-const checkpointPath = "checkpoint"
+const checkpointPath = layout.CheckpointPath
+
+// entriesPrefix is the tlog-tiles directory holding entry bundles. Paths below
+// it are produced and parsed by the layout package.
+const entriesPrefix = "tile/entries/"
 
 // Log is an in-memory view of the repository's transparency log.
 type Log struct {
@@ -89,7 +98,7 @@ func Open(repoDir string) (*Log, error) {
 
 // readEntries loads every entry bundle in the log tree, in index order.
 func readEntries(repoDir string) ([]Entry, error) {
-	out, err := gitutil.Run(repoDir, "ls-tree", "-r", "--name-only", LogRef, "tile/entries/")
+	out, err := gitutil.Run(repoDir, "ls-tree", "-r", "--name-only", LogRef, entriesPrefix)
 	if err != nil {
 		// A log with a checkpoint but no entries is not valid, but an empty
 		// tree is not an error to read.
@@ -98,24 +107,28 @@ func readEntries(repoDir string) ([]Entry, error) {
 
 	// Collect bundle paths keyed by their starting entry index so they can be
 	// concatenated in order regardless of how ls-tree sorts them.
-	bundles := make(map[int]string)
+	bundles := make(map[uint64]string)
 	for _, path := range strings.Split(strings.TrimSpace(out), "\n") {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
 		}
-		idx, err := parseBundlePath(path)
+		index, ok := strings.CutPrefix(path, entriesPrefix)
+		if !ok {
+			return nil, fmt.Errorf("unexpected object in log tree: %q", path)
+		}
+		n, _, err := layout.ParseTileIndexPartial(index)
 		if err != nil {
-			return nil, fmt.Errorf("unexpected object in log tree: %w", err)
+			return nil, fmt.Errorf("unexpected object in log tree %q: %w", path, err)
 		}
-		if prev, dup := bundles[idx]; dup {
-			return nil, fmt.Errorf("log tree has two bundles for index %d: %q and %q", idx, prev, path)
+		if prev, dup := bundles[n]; dup {
+			return nil, fmt.Errorf("log tree has two bundles for index %d: %q and %q", n, prev, path)
 		}
-		bundles[idx] = path
+		bundles[n] = path
 	}
 
 	var entries []Entry
-	for i := 0; i < len(bundles); i++ {
+	for i := uint64(0); i < uint64(len(bundles)); i++ {
 		path, ok := bundles[i]
 		if !ok {
 			return nil, fmt.Errorf("log tree is missing entry bundle %d", i)
@@ -124,11 +137,15 @@ func readEntries(repoDir string) ([]Entry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading entry bundle %s: %w", path, err)
 		}
-		for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-			if line == "" {
-				continue
-			}
-			e, err := ParseEntry([]byte(line))
+		// Decoding with the tlog-tiles reference implementation rather than a
+		// local one keeps the stored bundles honest about the format they
+		// claim to be in.
+		var bundle api.EntryBundle
+		if err := bundle.UnmarshalText([]byte(content)); err != nil {
+			return nil, fmt.Errorf("decoding entry bundle %s: %w", path, err)
+		}
+		for _, raw := range bundle.Entries {
+			e, err := ParseEntry(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -136,6 +153,20 @@ func readEntries(repoDir string) ([]Entry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// marshalBundle encodes entries in the tlog-tiles entry bundle format: each
+// entry prefixed with its big-endian uint16 length.
+func marshalBundle(entries []Entry) ([]byte, error) {
+	var buf []byte
+	for _, e := range entries {
+		if len(e.raw) > MaxEntrySize {
+			return nil, fmt.Errorf("entry is %d bytes, exceeding the %d-byte limit", len(e.raw), MaxEntrySize)
+		}
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(e.raw)))
+		buf = append(buf, e.raw...)
+	}
+	return buf, nil
 }
 
 // Size is the number of entries in the log, which is also the tree size the
@@ -179,39 +210,24 @@ func (l *Log) Append(e Entry) {
 	l.entries = append(l.entries, e)
 }
 
-// RefUpdates returns the decoded ref-update entries naming a ref, in log
-// order. Entries of other types are not included.
-func (l *Log) RefUpdates(ref string) ([]RefUpdate, error) {
-	var out []RefUpdate
+// RefRecords returns the decoded ref-record entries naming a ref, in log
+// order. Entries of any other type, including types this implementation does
+// not recognise, are not included.
+func (l *Log) RefRecords(ref string) ([]RefRecord, error) {
+	var out []RefRecord
 	for i, e := range l.entries {
-		if e.Type != TypeRefUpdate {
+		if e.Type != TypeRefRecord {
 			continue
 		}
-		ru, err := e.AsRefUpdate()
+		rr, err := e.AsRefRecord()
 		if err != nil {
 			return nil, fmt.Errorf("log entry %d: %w", i, err)
 		}
-		if ru.Ref == ref {
-			out = append(out, ru)
+		if rr.Ref == ref {
+			out = append(out, rr)
 		}
 	}
 	return out, nil
-}
-
-// CheckEntryTypes reports an error if the log contains a critical entry whose
-// type this implementation does not understand.
-//
-// Refusing rather than skipping is what keeps an older verifier from reporting
-// success on a log whose meaning has moved on without it. A future entry type
-// that is genuinely safe to ignore can say so with "critical": false.
-func (l *Log) CheckEntryTypes() error {
-	for i, e := range l.entries {
-		if !e.Known() && e.Critical {
-			return fmt.Errorf("log entry %d has unrecognised critical type %q: "+
-				"this log was written by a newer git-ratchet and cannot be verified by this one", i, e.Type)
-		}
-	}
-	return nil
 }
 
 // ConsistencyProofFrom returns the proof that the log at size m is a prefix of
@@ -247,16 +263,21 @@ func (l *Log) Save(checkpoint, message string) error {
 	for start := 0; start < len(l.entries); start += EntriesPerBundle {
 		end := min(start+EntriesPerBundle, len(l.entries))
 
-		var b strings.Builder
-		for _, e := range l.entries[start:end] {
-			b.Write(e.raw)
-			b.WriteByte('\n')
+		content, err := marshalBundle(l.entries[start:end])
+		if err != nil {
+			return err
 		}
-		blob, err := gitutil.HashObject(l.repoDir, b.String())
+		blob, err := gitutil.HashObject(l.repoDir, string(content))
 		if err != nil {
 			return fmt.Errorf("writing entry bundle: %w", err)
 		}
-		blobs[bundlePath(start/EntriesPerBundle, end-start)] = blob
+		// A full bundle takes the unsuffixed path; a partial one carries its
+		// width, so it never occupies the path its eventual full form will use.
+		partial := uint8(0)
+		if end-start < EntriesPerBundle {
+			partial = uint8(end - start)
+		}
+		blobs[layout.EntriesPath(uint64(start/EntriesPerBundle), partial)] = blob
 	}
 
 	tree, err := l.writeTree(blobs)

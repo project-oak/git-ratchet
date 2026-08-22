@@ -17,65 +17,71 @@ package gitlog
 import (
 	"bytes"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"strings"
 
 	"github.com/project-oak/git-ratchet/internal/gitutil"
 	"github.com/project-oak/git-ratchet/internal/tlog"
 )
 
-// A log entry is one line of compact JSON. Bundles are newline-delimited, so
-// an entry may not contain a raw newline; JSON escapes newlines inside
-// strings, so compact encoding always satisfies this.
+// A log entry is a sequence of newline-terminated lines. The first line names
+// the type of statement the entry makes; the rest belong to that type:
 //
-// Every entry carries the type of statement it makes, so the log can grow new
-// kinds of statement without the existing ones becoming ambiguous:
+//	ref-record/v1
+//	refs/heads/main 4f0f30afb02b71590f0b2e0a67f0b846715e1d04
 //
-//	{"type":"git-ratchet/ref-update/v1","ref":"refs/heads/main","object":"4f0f…"}
+// Entries are opaque byte strings as far as the log is concerned — bundles
+// length-prefix them — so an entry may contain newlines freely and a type is
+// free to define however many lines it needs.
 //
-// The version is part of the type string rather than a separate field. A
-// change in the meaning of a type is therefore a new type, which an
-// implementation that predates the change does not recognise — and unrecognised
-// types are refused rather than skipped. Old code cannot half-understand a
-// newer log.
+// # One version, on the type line
 //
-// # Bytes, not values
+// The version is part of the type identifier rather than a separate field, and
+// there is no second version for the framing. A change in what a statement
+// means produces a new type identifier, which older implementations do not
+// recognise. The framing itself — first line names the type, the rest is its
+// payload — is thin enough that a change to it can be announced the same way.
 //
-// The Merkle leaf hash is taken over the exact bytes stored in the log, never
-// over a re-encoding of the decoded entry. JSON does not define a canonical
-// encoding — key order and spacing are free — so re-encoding an entry could
-// produce different bytes and thus a different leaf hash, invalidating every
-// proof over it. [Entry] therefore keeps the bytes it was parsed from, and
-// [Entry.LeafHash] reads only those.
+// # Unrecognised types are skipped
+//
+// An implementation reading a type it does not know ignores that entry. This
+// is safe for statements that record state, which is all of them so far,
+// because verification does not merely read the log: it reconciles the log
+// against the repository. Entries a reader skips leave its idea of the latest
+// logged state behind the real ref, and a ref ahead of the log is already a
+// failure.
+//
+// It would not be safe for a statement that withdrew something previously
+// recorded, since skipping that would turn a revocation into silence. No such
+// statement exists, and adding one would need a way to mark it as
+// must-understand that every existing reader already honours — which is to say
+// it cannot be added compatibly later. That is a deliberate trade: the cost of
+// reserving a marker now was judged higher than the likelihood of ever needing
+// one.
 const (
-	// TypeRefUpdate states that a ref pointed at an object. It is the only
-	// entry type this implementation writes or understands.
-	TypeRefUpdate = "git-ratchet/ref-update/v1"
+	// TypeRefRecord states that a ref pointed at an object.
+	TypeRefRecord = "ref-record/v1"
+
+	// MaxEntrySize is the largest entry a tlog-tiles bundle can hold, since
+	// bundles length-prefix entries with a uint16.
+	MaxEntrySize = 65535
 )
 
 // knownTypes is the set of entry types this implementation understands.
-// Adding a type here is what makes verification willing to accept it.
 var knownTypes = map[string]bool{
-	TypeRefUpdate: true,
+	TypeRefRecord: true,
 }
 
 // Entry is a single entry in the log.
 type Entry struct {
 	// raw is the exact byte sequence stored in the log, and the only input to
 	// the leaf hash. It is unexported so that no caller can construct an Entry
-	// whose bytes disagree with its fields.
+	// whose bytes disagree with its type.
 	raw []byte
 
-	// Type is the entry's statement type, e.g. [TypeRefUpdate].
+	// Type is the entry's statement type, e.g. [TypeRefRecord].
 	Type string
-
-	// Critical reports whether an implementation that does not recognise Type
-	// must refuse the log rather than skip the entry. It defaults to true when
-	// the entry does not say, so an entry is only ever skippable by saying so
-	// explicitly.
-	Critical bool
 }
 
 // Raw returns a copy of the entry's stored bytes.
@@ -87,101 +93,96 @@ func (e Entry) LeafHash() tlog.Hash { return tlog.HashLeaf(e.raw) }
 // Known reports whether this implementation understands the entry's type.
 func (e Entry) Known() bool { return knownTypes[e.Type] }
 
-// RefUpdate is the payload of a [TypeRefUpdate] entry: the object a ref
+// RefRecord is the payload of a [TypeRefRecord] entry: the object a ref
 // pointed at when the entry was appended.
 //
 // Entries record state, not transitions. An entry does not name the ref's
 // previous value: the log's ordering already establishes it, and a
 // self-asserted predecessor would be a field that verification must not trust
 // anyway.
-type RefUpdate struct {
+type RefRecord struct {
 	Ref    string // full ref path, e.g. "refs/heads/main"
-	Object string // hex object hash the ref pointed at
+	Object string // lowercase hex object hash the ref pointed at
 }
 
-// refUpdateJSON is the wire form of a ref-update entry. Field order here is
-// the order the encoder emits, and so the order entries appear in the log.
-type refUpdateJSON struct {
-	Type     string `json:"type"`
-	Critical *bool  `json:"critical,omitempty"`
-	Ref      string `json:"ref"`
-	Object   string `json:"object"`
-}
-
-// NewRefUpdate builds a ref-update entry ready to append.
-func NewRefUpdate(ref, object string) (Entry, error) {
-	if err := validateRefUpdate(ref, object); err != nil {
+// NewRefRecord builds a ref-record entry ready to append.
+func NewRefRecord(ref, object string) (Entry, error) {
+	if err := validateRefRecord(ref, object); err != nil {
 		return Entry{}, err
 	}
-	raw, err := json.Marshal(refUpdateJSON{Type: TypeRefUpdate, Ref: ref, Object: object})
+	raw := []byte(TypeRefRecord + "\n" + ref + " " + object + "\n")
+	if len(raw) > MaxEntrySize {
+		return Entry{}, fmt.Errorf("entry is %d bytes, exceeding the %d-byte limit", len(raw), MaxEntrySize)
+	}
+	return Entry{raw: raw, Type: TypeRefRecord}, nil
+}
+
+// AsRefRecord decodes the entry's payload.
+func (e Entry) AsRefRecord() (RefRecord, error) {
+	if e.Type != TypeRefRecord {
+		return RefRecord{}, fmt.Errorf("entry is of type %q, not %q", e.Type, TypeRefRecord)
+	}
+	lines, err := entryLines(e.raw)
 	if err != nil {
-		return Entry{}, fmt.Errorf("encoding ref-update entry: %w", err)
+		return RefRecord{}, err
 	}
-	return Entry{raw: raw, Type: TypeRefUpdate, Critical: true}, nil
+	if len(lines) != 2 {
+		return RefRecord{}, fmt.Errorf("%s entry has %d lines, want 2", TypeRefRecord, len(lines))
+	}
+
+	ref, object, found := strings.Cut(lines[1], " ")
+	if !found {
+		return RefRecord{}, fmt.Errorf("%s entry: expected \"<ref> <object>\"", TypeRefRecord)
+	}
+	if err := validateRefRecord(ref, object); err != nil {
+		return RefRecord{}, err
+	}
+	return RefRecord{Ref: ref, Object: object}, nil
 }
 
-// AsRefUpdate decodes the entry's payload. Unknown fields are refused: a field
-// this implementation does not know about could carry meaning it would
-// silently ignore, and any such change belongs in a new type version.
-func (e Entry) AsRefUpdate() (RefUpdate, error) {
-	if e.Type != TypeRefUpdate {
-		return RefUpdate{}, fmt.Errorf("entry is of type %q, not %q", e.Type, TypeRefUpdate)
-	}
-	dec := json.NewDecoder(bytes.NewReader(e.raw))
-	dec.DisallowUnknownFields()
-	var v refUpdateJSON
-	if err := dec.Decode(&v); err != nil {
-		return RefUpdate{}, fmt.Errorf("decoding ref-update entry: %w", err)
-	}
-	if err := validateRefUpdate(v.Ref, v.Object); err != nil {
-		return RefUpdate{}, err
-	}
-	return RefUpdate{Ref: v.Ref, Object: v.Object}, nil
-}
-
-// validateRefUpdate checks the fields a ref-update entry must carry.
-func validateRefUpdate(ref, object string) error {
+// validateRefRecord checks the fields a ref-record entry must carry.
+//
+// The checks are exact rather than tolerant. Anything accepted in more than
+// one written form would be a place where two encoders produce different bytes
+// for the same statement, and so different leaf hashes.
+func validateRefRecord(ref, object string) error {
 	if _, err := gitutil.ParseRefKind(ref); err != nil {
-		return fmt.Errorf("ref-update entry: %w", err)
+		return fmt.Errorf("ref-record entry: %w", err)
 	}
 	// Git object hashes are hex SHA-1 or SHA-256, matching the lengths the
 	// checkpoint format accepts.
 	if len(object) != 40 && len(object) != 64 {
-		return fmt.Errorf("ref-update entry: object hash %q is %d characters, want 40 or 64", object, len(object))
+		return fmt.Errorf("ref-record entry: object hash %q is %d characters, want 40 or 64", object, len(object))
+	}
+	if strings.ToLower(object) != object {
+		return fmt.Errorf("ref-record entry: object hash %q must be lowercase", object)
 	}
 	if _, err := hex.DecodeString(object); err != nil {
-		return fmt.Errorf("ref-update entry: object hash %q is not hex", object)
+		return fmt.Errorf("ref-record entry: object hash %q is not hex", object)
 	}
 	return nil
 }
 
-// ParseEntry parses one stored log line.
-func ParseEntry(line []byte) (Entry, error) {
-	if err := checkWellFormedJSON(line); err != nil {
-		return Entry{}, fmt.Errorf("malformed log entry: %w", err)
+// ParseEntry parses one stored entry.
+//
+// An entry of an unrecognised type parses successfully and keeps its bytes,
+// so that it still contributes its leaf to the tree; only its meaning is
+// unavailable. A recognised type is validated here, so a malformed entry is
+// caught when the log is read rather than at the point some caller uses it.
+func ParseEntry(raw []byte) (Entry, error) {
+	lines, err := entryLines(raw)
+	if err != nil {
+		return Entry{}, err
+	}
+	entryType := lines[0]
+	if entryType == "" {
+		return Entry{}, errors.New("malformed log entry: empty type line")
+	}
+	if strings.ContainsAny(entryType, " \t") {
+		return Entry{}, fmt.Errorf("malformed log entry: type %q contains whitespace", entryType)
 	}
 
-	// The envelope is read leniently: an entry of a type this implementation
-	// does not know will carry fields it cannot name, and it still has to be
-	// able to read the type and criticality in order to refuse it properly.
-	var env struct {
-		Type     *string `json:"type"`
-		Critical *bool   `json:"critical"`
-	}
-	if err := json.Unmarshal(line, &env); err != nil {
-		return Entry{}, fmt.Errorf("malformed log entry: %w", err)
-	}
-	if env.Type == nil || *env.Type == "" {
-		return Entry{}, errors.New("malformed log entry: missing type")
-	}
-
-	e := Entry{raw: bytes.Clone(line), Type: *env.Type, Critical: true}
-	if env.Critical != nil {
-		e.Critical = *env.Critical
-	}
-
-	// A recognised type is validated now, so a malformed entry is caught when
-	// the log is read rather than at the point some caller happens to use it.
+	e := Entry{raw: bytes.Clone(raw), Type: entryType}
 	if e.Known() {
 		if err := e.validate(); err != nil {
 			return Entry{}, err
@@ -194,84 +195,35 @@ func ParseEntry(line []byte) (Entry, error) {
 // a type to knownTypes.
 func (e Entry) validate() error {
 	switch e.Type {
-	case TypeRefUpdate:
-		_, err := e.AsRefUpdate()
+	case TypeRefRecord:
+		_, err := e.AsRefRecord()
 		return err
 	default:
 		return nil
 	}
 }
 
-// checkWellFormedJSON verifies that data is exactly one JSON object, with no
-// trailing content and no object anywhere in it containing a repeated key.
-//
-// Repeated keys are the reason this exists. JSON parsers disagree about which
-// value wins, so an entry carrying a key twice could mean different things to
-// two verifiers reading identical bytes — a split view inside a single log.
-func checkWellFormedJSON(data []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	tok, err := dec.Token()
-	if err != nil {
-		return err
+// entryLines splits an entry into its lines, enforcing the framing rules that
+// keep the encoding canonical: every line is newline-terminated, including the
+// last, and no line carries a carriage return or trailing space.
+func entryLines(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("malformed log entry: empty")
 	}
-	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
-		return errors.New("entry must be a JSON object")
+	if len(raw) > MaxEntrySize {
+		return nil, fmt.Errorf("malformed log entry: %d bytes exceeds the %d-byte limit", len(raw), MaxEntrySize)
 	}
-	if err := walkObject(dec); err != nil {
-		return err
+	if raw[len(raw)-1] != '\n' {
+		return nil, errors.New("malformed log entry: must end with a newline")
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("trailing content after entry")
-	}
-	return nil
-}
-
-// walkObject consumes an object whose opening brace has been read.
-func walkObject(dec *json.Decoder) error {
-	seen := make(map[string]struct{})
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return err
+	lines := strings.Split(string(raw[:len(raw)-1]), "\n")
+	for i, line := range lines {
+		if strings.ContainsRune(line, '\r') {
+			return nil, fmt.Errorf("malformed log entry: line %d contains a carriage return", i+1)
 		}
-		key, ok := tok.(string)
-		if !ok {
-			return fmt.Errorf("expected an object key, got %v", tok)
-		}
-		if _, dup := seen[key]; dup {
-			return fmt.Errorf("duplicate key %q", key)
-		}
-		seen[key] = struct{}{}
-		if err := walkValue(dec); err != nil {
-			return err
+		if line != strings.TrimRight(line, " \t") {
+			return nil, fmt.Errorf("malformed log entry: line %d has trailing whitespace", i+1)
 		}
 	}
-	_, err := dec.Token() // closing brace
-	return err
-}
-
-// walkValue consumes one value, descending into objects and arrays.
-func walkValue(dec *json.Decoder) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil // scalar
-	}
-	switch delim {
-	case '{':
-		return walkObject(dec)
-	case '[':
-		for dec.More() {
-			if err := walkValue(dec); err != nil {
-				return err
-			}
-		}
-		_, err := dec.Token() // closing bracket
-		return err
-	default:
-		return fmt.Errorf("unexpected %v", delim)
-	}
+	return lines, nil
 }

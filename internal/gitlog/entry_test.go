@@ -15,38 +15,30 @@
 package gitlog
 
 import (
-	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/transparency-dev/tessera/api"
 )
 
 const testObject = "4f0f30afb02b71590f0b2e0a67f0b846715e1d04"
 
-func TestNewRefUpdateWireForm(t *testing.T) {
-	e, err := NewRefUpdate("refs/heads/main", testObject)
+func TestNewRefRecordWireForm(t *testing.T) {
+	e, err := NewRefRecord("refs/heads/main", testObject)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	want := `{"type":"git-ratchet/ref-update/v1","ref":"refs/heads/main","object":"` + testObject + `"}`
+	want := "ref-record/v1\nrefs/heads/main " + testObject + "\n"
 	if got := string(e.Raw()); got != want {
-		t.Errorf("wire form =\n  %s\nwant\n  %s", got, want)
+		t.Errorf("wire form = %q, want %q", got, want)
 	}
-	if e.Type != TypeRefUpdate {
+	if e.Type != TypeRefRecord {
 		t.Errorf("Type = %q", e.Type)
-	}
-	if !e.Critical {
-		t.Error("entries should be critical unless they say otherwise")
-	}
-	// An entry must not contain a raw newline: bundles are newline-delimited.
-	if bytes.ContainsRune(e.Raw(), '\n') {
-		t.Error("entry contains a raw newline")
 	}
 }
 
-func TestRefUpdateRoundTrip(t *testing.T) {
-	e, err := NewRefUpdate("refs/tags/v1.0.0", testObject)
+func TestRefRecordRoundTrip(t *testing.T) {
+	e, err := NewRefRecord("refs/tags/v1.0.0", testObject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,172 +46,136 @@ func TestRefUpdateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseEntry: %v", err)
 	}
-	ru, err := parsed.AsRefUpdate()
+	rr, err := parsed.AsRefRecord()
 	if err != nil {
-		t.Fatalf("AsRefUpdate: %v", err)
+		t.Fatalf("AsRefRecord: %v", err)
 	}
-	if ru.Ref != "refs/tags/v1.0.0" || ru.Object != testObject {
-		t.Errorf("round trip = %+v", ru)
+	if rr.Ref != "refs/tags/v1.0.0" || rr.Object != testObject {
+		t.Errorf("round trip = %+v", rr)
+	}
+	if parsed.LeafHash() != e.LeafHash() {
+		t.Error("leaf hash changed across a parse")
 	}
 }
 
-// TestLeafHashUsesStoredBytes is the property that makes JSON safe here: the
-// leaf hash must come from the bytes the log holds, not from re-encoding the
-// decoded entry. Two encodings of the same entry are different leaves.
-func TestLeafHashUsesStoredBytes(t *testing.T) {
-	canonical, err := NewRefUpdate("refs/heads/main", testObject)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The same entry, semantically, with the keys in a different order and
-	// some insignificant whitespace — exactly what a different encoder might
-	// produce.
-	reordered := []byte(`{"object":"` + testObject + `", "ref":"refs/heads/main", "type":"` + TypeRefUpdate + `"}`)
-	other, err := ParseEntry(reordered)
-	if err != nil {
-		t.Fatalf("ParseEntry: %v", err)
-	}
-
-	// Both decode to the same statement...
-	a, err := canonical.AsRefUpdate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := other.AsRefUpdate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a != b {
-		t.Fatalf("expected the same decoded statement, got %+v and %+v", a, b)
-	}
-
-	// ...but they are distinct leaves, because the bytes differ. This is why
-	// nothing may re-encode an entry to recompute its hash.
-	if canonical.LeafHash() == other.LeafHash() {
-		t.Error("differently encoded entries must not share a leaf hash")
-	}
-	if !bytes.Equal(other.Raw(), reordered) {
-		t.Error("ParseEntry must preserve the exact bytes it was given")
-	}
-}
-
-// TestDuplicateKeysRejected covers the parser-divergence hazard: JSON parsers
-// disagree about which value wins, so an entry with a repeated key could mean
-// different things to two verifiers reading identical bytes.
-func TestDuplicateKeysRejected(t *testing.T) {
-	line := []byte(`{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","ref":"refs/heads/evil","object":"` + testObject + `"}`)
-
-	// Confirm the hazard is real for a mainstream parser before asserting we
-	// reject it: encoding/json silently takes the last value.
-	var loose map[string]any
-	if err := json.Unmarshal(line, &loose); err != nil {
-		t.Fatal(err)
-	}
-	if loose["ref"] != "refs/heads/evil" {
-		t.Fatalf("expected the lenient parse to take the last value, got %v", loose["ref"])
-	}
-
-	if _, err := ParseEntry(line); err == nil {
-		t.Error("expected a duplicate key to be rejected")
-	} else if !strings.Contains(err.Error(), "duplicate key") {
-		t.Errorf("expected a duplicate-key diagnostic, got %v", err)
+// TestEncodingIsCanonical checks that the grammar admits exactly one byte
+// string per statement. Anything accepted in a second written form would be a
+// place where two encoders produce different leaf hashes for the same thing.
+func TestEncodingIsCanonical(t *testing.T) {
+	for _, tc := range []struct{ name, raw string }{
+		{"no trailing newline", "ref-record/v1\nrefs/heads/main " + testObject},
+		{"two spaces", "ref-record/v1\nrefs/heads/main  " + testObject + "\n"},
+		{"leading space", "ref-record/v1\n refs/heads/main " + testObject + "\n"},
+		{"trailing space", "ref-record/v1\nrefs/heads/main " + testObject + " \n"},
+		{"carriage return", "ref-record/v1\r\nrefs/heads/main " + testObject + "\n"},
+		{"uppercase hex", "ref-record/v1\nrefs/heads/main " + strings.ToUpper(testObject) + "\n"},
+		{"extra line", "ref-record/v1\nrefs/heads/main " + testObject + "\nextra\n"},
+		{"blank line", "ref-record/v1\n\nrefs/heads/main " + testObject + "\n"},
+		{"type line only", "ref-record/v1\n"},
+	} {
+		if _, err := ParseEntry([]byte(tc.raw)); err == nil {
+			t.Errorf("%s: expected rejection, got none", tc.name)
+		}
 	}
 }
 
 func TestParseEntryRejectsMalformed(t *testing.T) {
-	for _, tc := range []struct{ name, line string }{
-		{"empty", ``},
-		{"not an object", `"just a string"`},
-		{"array", `[{"type":"x"}]`},
-		{"trailing content", `{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","object":"` + testObject + `"} {}`},
-		{"missing type", `{"ref":"refs/heads/main","object":"` + testObject + `"}`},
-		{"empty type", `{"type":"","ref":"refs/heads/main"}`},
-		{"type not a string", `{"type":123}`},
-		{"truncated", `{"type":"` + TypeRefUpdate + `"`},
-		{"nested duplicate key", `{"type":"other/v1","x":{"a":1,"a":2}}`},
+	for _, tc := range []struct{ name, raw string }{
+		{"empty", ""},
+		{"empty type", "\nrefs/heads/main " + testObject + "\n"},
+		{"type with space", "ref record/v1\nrefs/heads/main " + testObject + "\n"},
+		{"bad ref namespace", "ref-record/v1\nrefs/notes/x " + testObject + "\n"},
+		{"short object", "ref-record/v1\nrefs/heads/main abcd\n"},
+		{"non-hex object", "ref-record/v1\nrefs/heads/main " + strings.Repeat("z", 40) + "\n"},
+		{"missing object", "ref-record/v1\nrefs/heads/main\n"},
 	} {
-		if _, err := ParseEntry([]byte(tc.line)); err == nil {
+		if _, err := ParseEntry([]byte(tc.raw)); err == nil {
 			t.Errorf("%s: expected an error, got none", tc.name)
 		}
 	}
 }
 
-// TestKnownTypeValidatedOnParse checks that a recognised type is checked when
-// the log is read, not when some later caller happens to look at it.
-func TestKnownTypeValidatedOnParse(t *testing.T) {
-	for _, tc := range []struct{ name, line string }{
-		{"unknown field", `{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","object":"` + testObject + `","extra":1}`},
-		{"bad ref namespace", `{"type":"` + TypeRefUpdate + `","ref":"refs/notes/x","object":"` + testObject + `"}`},
-		{"short object", `{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","object":"abcd"}`},
-		{"non-hex object", `{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","object":"zzzz30afb02b71590f0b2e0a67f0b846715e1d04"}`},
-		{"missing ref", `{"type":"` + TypeRefUpdate + `","object":"` + testObject + `"}`},
-	} {
-		if _, err := ParseEntry([]byte(tc.line)); err == nil {
-			t.Errorf("%s: expected an error, got none", tc.name)
-		}
-	}
-}
-
-// TestUnknownFieldsRejected states the evolution rule: a change in what an
-// entry means requires a new type version, because an implementation that
-// predates the change must not silently ignore the new field.
-func TestUnknownFieldsRejected(t *testing.T) {
-	line := []byte(`{"type":"` + TypeRefUpdate + `","ref":"refs/heads/main","object":"` + testObject + `","tombstoned":true}`)
-	if _, err := ParseEntry(line); err == nil {
-		t.Error("expected an unknown field in a known type to be rejected")
-	}
-}
-
-// TestUnknownTypesAreCriticalByDefault covers forward compatibility: an entry
-// this implementation does not understand must be refused unless it explicitly
-// says it is safe to skip.
-func TestUnknownTypesAreCriticalByDefault(t *testing.T) {
-	future := []byte(`{"type":"git-ratchet/tombstone/v1","commit":"` + testObject + `","reason":"legal"}`)
-	e, err := ParseEntry(future)
+// TestUnknownTypeKeepsBytes checks that an entry of an unrecognised type still
+// parses and keeps its bytes, so it contributes the right leaf to the tree
+// even though its meaning is unavailable.
+func TestUnknownTypeKeepsBytes(t *testing.T) {
+	raw := "tombstone/v1\n" + testObject + " refs/heads/main\na reason\n\nwith a blank line\n"
+	e, err := ParseEntry([]byte(raw))
 	if err != nil {
-		t.Fatalf("an unknown type must still parse as an envelope: %v", err)
+		t.Fatalf("ParseEntry: %v", err)
+	}
+	if e.Type != "tombstone/v1" {
+		t.Errorf("Type = %q", e.Type)
 	}
 	if e.Known() {
-		t.Error("tombstone should not be a known type in this implementation")
+		t.Error("tombstone should not be known")
 	}
-	if !e.Critical {
-		t.Error("an entry that does not mention criticality must default to critical")
+	if string(e.Raw()) != raw {
+		t.Error("ParseEntry must preserve the exact bytes it was given")
 	}
-
-	optional := []byte(`{"type":"git-ratchet/annotation/v1","critical":false,"note":"hello"}`)
-	o, err := ParseEntry(optional)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if o.Critical {
-		t.Error(`"critical":false must be honoured`)
+	if _, err := e.AsRefRecord(); err == nil {
+		t.Error("AsRefRecord should refuse a different type")
 	}
 }
 
-func TestAsRefUpdateRejectsOtherTypes(t *testing.T) {
-	e, err := ParseEntry([]byte(`{"type":"git-ratchet/tombstone/v1","commit":"x"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.AsRefUpdate(); err == nil {
-		t.Error("expected AsRefUpdate to refuse a different type")
-	}
-}
-
-func TestNewRefUpdateValidates(t *testing.T) {
+func TestNewRefRecordValidates(t *testing.T) {
 	for _, tc := range []struct{ name, ref, object string }{
 		{"bad namespace", "refs/notes/x", testObject},
 		{"empty ref", "", testObject},
 		{"short object", "refs/heads/main", "abcd"},
+		{"uppercase object", "refs/heads/main", strings.ToUpper(testObject)},
 		{"non-hex object", "refs/heads/main", strings.Repeat("z", 40)},
 	} {
-		if _, err := NewRefUpdate(tc.ref, tc.object); err == nil {
+		if _, err := NewRefRecord(tc.ref, tc.object); err == nil {
 			t.Errorf("%s: expected an error, got none", tc.name)
 		}
 	}
 	// SHA-256 repositories use 64-character hashes.
-	if _, err := NewRefUpdate("refs/heads/main", strings.Repeat("a", 64)); err != nil {
+	if _, err := NewRefRecord("refs/heads/main", strings.Repeat("a", 64)); err != nil {
 		t.Errorf("a SHA-256 object hash should be accepted: %v", err)
+	}
+}
+
+// TestBundleEncodingMatchesReference pins our writer against the tlog-tiles
+// reference decoder. Writing bundles in a format only we could read is the
+// defect this test exists to prevent.
+func TestBundleEncodingMatchesReference(t *testing.T) {
+	entries := []Entry{
+		mustRefRecord(t, "refs/heads/main", obj("aaaa")),
+		mustRefRecord(t, "refs/tags/v1.0.0", obj("bbbb")),
+	}
+	// An entry containing newlines and a blank line, which the length-prefixed
+	// framing must carry without any escaping.
+	awkward, err := ParseEntry([]byte("tombstone/v1\n" + testObject + " refs/heads/main\nline one\n\nline two\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, awkward)
+
+	raw, err := marshalBundle(entries)
+	if err != nil {
+		t.Fatalf("marshalBundle: %v", err)
+	}
+
+	var bundle api.EntryBundle
+	if err := bundle.UnmarshalText(raw); err != nil {
+		t.Fatalf("the reference decoder rejected our bundle: %v", err)
+	}
+	if len(bundle.Entries) != len(entries) {
+		t.Fatalf("decoded %d entries, want %d", len(bundle.Entries), len(entries))
+	}
+	for i := range entries {
+		if string(bundle.Entries[i]) != string(entries[i].Raw()) {
+			t.Errorf("entry %d did not survive the round trip:\ngot  %q\nwant %q",
+				i, bundle.Entries[i], entries[i].Raw())
+		}
+	}
+}
+
+func TestMarshalBundleRejectsOversizedEntry(t *testing.T) {
+	// Construct an entry larger than a uint16 length prefix can describe.
+	big := Entry{raw: []byte("x/v1\n" + strings.Repeat("a", MaxEntrySize) + "\n"), Type: "x/v1"}
+	if _, err := marshalBundle([]Entry{big}); err == nil {
+		t.Error("expected an oversized entry to be rejected")
 	}
 }

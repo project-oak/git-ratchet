@@ -82,13 +82,13 @@ func checkpointTlog(repoDir, ref, origin string, signer *note.Signer, pol *polic
 	// Appending an entry identical to the ref's latest logged state would grow
 	// the log without saying anything new, so re-checkpointing an unchanged
 	// ref just refreshes the cosignatures on the current head.
-	updates, err := l.RefUpdates(ref)
+	records, err := l.RefRecords(ref)
 	if err != nil {
 		return err
 	}
 	appended := false
-	if len(updates) == 0 || updates[len(updates)-1].Object != objectHash {
-		entry, err := gitlog.NewRefUpdate(ref, objectHash)
+	if len(records) == 0 || records[len(records)-1].Object != objectHash {
+		entry, err := gitlog.NewRefRecord(ref, objectHash)
 		if err != nil {
 			return err
 		}
@@ -217,12 +217,6 @@ func openVerifiedLog(repoDir string, pol *policy.Policy) (*gitlog.Log, error) {
 	if l.Root() != cp.Root {
 		return nil, fmt.Errorf("log entries do not reproduce the cosigned root hash")
 	}
-
-	// Refuse a log containing statements this implementation cannot interpret,
-	// rather than verifying the part of it that happens to be legible.
-	if err := l.CheckEntryTypes(); err != nil {
-		return nil, err
-	}
 	return l, nil
 }
 
@@ -231,13 +225,18 @@ func openVerifiedLog(repoDir string, pol *policy.Policy) (*gitlog.Log, error) {
 // This is the walk that replaces the witness's ancestry check: the witness
 // only attested that the log grew by appending, so every ratchet property is
 // established here, from entries the verifier holds locally.
+//
+// Entries of types this implementation does not recognise are skipped. That
+// leaves its idea of the latest logged state behind the real ref if it skipped
+// anything relevant, and the final comparison below rejects a ref that is
+// ahead of the log.
 func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
 	kind, err := gitutil.ParseRefKind(ref)
 	if err != nil {
 		return err
 	}
 
-	entries, err := l.RefUpdates(ref)
+	entries, err := l.RefRecords(ref)
 	if err != nil {
 		return err
 	}

@@ -19,13 +19,14 @@ go_library(
     srcs = [
         "entry.go",
         "gitlog.go",
-        "tilepath.go",
     ],
     importpath = "github.com/project-oak/git-ratchet/internal/gitlog",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/gitutil",
         "//internal/tlog",
+        "@com_github_transparency_dev_tessera//api",
+        "@com_github_transparency_dev_tessera//api/layout",
     ],
 )
 
@@ -34,8 +35,10 @@ go_test(
     srcs = [
         "entry_test.go",
         "gitlog_test.go",
-        "tilepath_test.go",
     ],
     embed = [":gitlog"],
-    deps = ["//internal/tlog"],
+    deps = [
+        "//internal/tlog",
+        "@com_github_transparency_dev_tessera//api",
+    ],
 )
