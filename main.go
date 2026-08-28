@@ -545,15 +545,22 @@ func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...an
 	}
 	signed := string(noteData)
 
-	// Read each cosignature file.
+	// Each --cosig file holds the witness's response to the add-checkpoint
+	// request, as message/http. Reading it as one is what lets a refusal be
+	// told from a cosignature, rather than appending whatever the file held.
 	var cosigLines []string
 	for _, cosigPath := range c.cosigPaths {
 		cosigData, err := os.ReadFile(cosigPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: reading cosignature file %s: %v\n", cosigPath, err)
+			fmt.Fprintf(os.Stderr, "error: reading witness response %s: %v\n", cosigPath, err)
 			return subcommands.ExitFailure
 		}
-		cosigLines = append(cosigLines, strings.TrimSpace(string(cosigData)))
+		line, err := cosignatureFromResponse(string(cosigData))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: witness response %s: %v\n", cosigPath, err)
+			return subcommands.ExitFailure
+		}
+		cosigLines = append(cosigLines, line)
 	}
 
 	assembled := signed

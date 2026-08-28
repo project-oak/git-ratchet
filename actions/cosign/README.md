@@ -18,15 +18,15 @@ This action should be triggered by `issues: opened` events.
 
 1. Checks out the witness repository.
 2. Installs the standalone `cosign` binary.
-3. Parses the issue body for an `add-checkpoint` fenced code block.
+3. Reads the `http` fenced code block from the issue body: one `message/http`
+   add-checkpoint request.
 4. Verifies the origin is registered (`checkpoints/<origin>/vkeys.txt` must
    exist).
-5. Runs the cosign binary with the stored checkpoint (if any) for state
-   tracking.
-6. Commits the cosigned checkpoint to the repo under
-   `checkpoints/<origin>/<ref>`.
-7. Posts the cosignature as a comment on the issue.
-8. Closes the issue (`completed` on success, `not planned` on failure).
+5. Runs the cosign binary, which answers the request with the standard
+   `add-checkpoint` handler.
+6. Commits the updated state under `checkpoints/<origin>/checkpoint`.
+7. Posts the response as a comment, whatever its status.
+8. Closes the issue (`completed` once answered, `not planned` on failure).
 
 ## Required Permissions
 
