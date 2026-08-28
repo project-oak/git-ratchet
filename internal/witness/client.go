@@ -57,10 +57,13 @@ func (e *RejectionError) Error() string {
 // The caller should pass a context with an appropriate deadline; Cosign will
 // cancel the HTTP request and return an error if the context expires.
 //
+// The client carries the transports available for reaching a witness, so a
+// caller can serve endpoints this package knows nothing about.
+//
 // Cosign returns a *RejectionError when the witness actively rejects the
 // checkpoint (HTTP 409, 422, or 403). Callers must not silently skip these
 // errors.
-func Cosign(ctx context.Context, endpoint string, ancestry []string, signedCheckpoint string) (string, error) {
+func Cosign(ctx context.Context, client *http.Client, endpoint string, ancestry []string, signedCheckpoint string) (string, error) {
 	url := strings.TrimRight(endpoint, "/") + "/add-checkpoint"
 
 	var parts []string
@@ -77,7 +80,7 @@ func Cosign(ctx context.Context, endpoint string, ancestry []string, signedCheck
 	}
 	req.Header.Set("Content-Type", "text/plain")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("contacting witness %s: %w", endpoint, err)
 	}

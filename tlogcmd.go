@@ -141,7 +141,7 @@ func checkpointRefFlag(mode, ref string) error {
 // checkpointTlog has the log's current head cosigned by the policy's witnesses
 // and stores the result. It covers whatever the log holds; entries get there
 // through logRefsTlog.
-func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TLogPolicy) error {
+func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration) error {
 	l, oldSize, err := logToCheckpoint(repoDir)
 	if err != nil {
 		return err
@@ -153,7 +153,7 @@ func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TL
 		return fmt.Errorf("signing checkpoint: %w", err)
 	}
 
-	cosigLines, err := collectTlogCosignatures(pol, l, oldSize, signed)
+	cosigLines, err := collectTlogCosignatures(pol, client, timeout, l, oldSize, signed)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TL
 
 // collectTlogCosignatures submits the signed checkpoint to every witness in
 // the policy, in parallel, and returns the cosignature lines collected.
-func collectTlogCosignatures(pol *fpolicy.TLogPolicy, l *gitlog.Log, oldSize uint64, signed string) ([]string, error) {
+func collectTlogCosignatures(pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration, l *gitlog.Log, oldSize uint64, signed string) ([]string, error) {
 	type result struct {
 		policyName string
 		cosigLine  string
@@ -189,7 +189,7 @@ func collectTlogCosignatures(pol *fpolicy.TLogPolicy, l *gitlog.Log, oldSize uin
 	ch := make(chan result, len(witnesses))
 	for _, w := range witnesses {
 		go func(w fpolicy.Witness) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			if w.URL == nil {
 				ch <- result{w.Name, "", fmt.Errorf("witness %s declares no URL", w.Name)}
@@ -199,7 +199,7 @@ func collectTlogCosignatures(pol *fpolicy.TLogPolicy, l *gitlog.Log, oldSize uin
 				ch <- result{w.Name, "", fmt.Errorf("unsupported witness transport %q for tlog mode", w.URL.Scheme)}
 				return
 			}
-			line, err := cosignWithWitness(ctx, w.URL, l, oldSize, signed)
+			line, err := cosignWithWitness(ctx, client, w.URL, l, oldSize, signed)
 			ch <- result{w.Name, line, err}
 		}(w)
 	}
@@ -311,8 +311,8 @@ func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
 // to a specific size, unlike the commit chain git-checkpoint mode sends, which
 // spans any gap. One retry is enough, because the size the witness reports is
 // the size it will accept.
-func cosignWithWitness(ctx context.Context, endpoint *url.URL, l *gitlog.Log, oldSize uint64, signed string) (string, error) {
-	w := whttp.NewWitness(endpoint, http.DefaultClient)
+func cosignWithWitness(ctx context.Context, client *http.Client, endpoint *url.URL, l *gitlog.Log, oldSize uint64, signed string) (string, error) {
+	w := whttp.NewWitness(endpoint, client)
 
 	submit := func(from uint64) ([]byte, uint64, error) {
 		proof, err := l.ConsistencyProofFrom(from)
