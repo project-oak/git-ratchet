@@ -200,7 +200,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 			defer cancel()
 			// Skip witnesses with non-HTTP endpoints.
 			if w.Endpoint != "" && !strings.HasPrefix(w.Endpoint, "http://") && !strings.HasPrefix(w.Endpoint, "https://") {
-				ch <- cosigResult{w.PolicyName, "", fmt.Errorf("unsupported witness transport %q (use checkpoint-request + checkpoint-store for non-HTTP witnesses)", w.Endpoint)}
+				ch <- cosigResult{w.PolicyName, "", fmt.Errorf("unsupported witness transport %q: %s mode reaches witnesses over HTTP only", w.Endpoint, modeGitCheckpoint)}
 				return
 			}
 			line, err := witness.Cosign(ctx, client, w.Endpoint, ancestry, signed)
@@ -392,10 +392,12 @@ func (*checkpointRequestCmd) Synopsis() string {
 }
 func (*checkpointRequestCmd) Usage() string {
 	return `checkpoint-request [flags]:
-  Produce the add-checkpoint request body (ancestry proof + signed
-  checkpoint note) without contacting any witnesses.
+  Produce the add-checkpoint request body and the signed checkpoint note
+  without contacting any witnesses.
 
-  The output can later be submitted to witnesses separately.
+  The output can be submitted to a witness separately, which is how a
+  github-issue:// witness is reached. Only supported with --mode ` + modeTlog + `;
+  ` + modeGitCheckpoint + ` mode reaches witnesses over HTTP only.
 `
 }
 
@@ -413,6 +415,11 @@ func (c *checkpointRequestCmd) SetFlags(f *flag.FlagSet) {
 func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
 	if err := validateMode(c.mode); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+	if c.mode != modeTlog {
+		fmt.Fprintf(os.Stderr, "error: checkpoint-request requires --mode %s: %s mode reaches witnesses over HTTP only, "+
+			"so `git-ratchet checkpoint` contacts them directly\n", modeTlog, modeGitCheckpoint)
 		return subcommands.ExitUsageError
 	}
 	if err := checkpointRefFlag(c.mode, c.ref); err != nil {
@@ -454,46 +461,15 @@ func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...
 		origin = signer.Name
 	}
 
-	if c.mode == modeTlog {
-		request, signed, err := checkpointRequestTlog(c.repoDir, origin, signer)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		if err := writeRequestFiles(c.outputRequest, request, c.outputNote, signed); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		return subcommands.ExitSuccess
-	}
-
-	// Build the signed checkpoint note and ancestry proof.
-	signed, ancestry, err := buildCheckpointRequest(c.repoDir, c.ref, origin, signer)
+	request, signed, err := checkpointRequestTlog(c.repoDir, origin, signer)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
-
-	// Assemble wire-format request: ancestry lines, empty line, signed note.
-	var wireFormat strings.Builder
-	for _, line := range ancestry {
-		wireFormat.WriteString(line)
-		wireFormat.WriteString("\n")
-	}
-	wireFormat.WriteString("\n")
-	wireFormat.WriteString(signed)
-	request := wireFormat.String()
-
-	// Write outputs.
-	if err := os.WriteFile(c.outputRequest, []byte(request), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "error: writing request to %s: %v\n", c.outputRequest, err)
+	if err := writeRequestFiles(c.outputRequest, request, c.outputNote, signed); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
-	if err := os.WriteFile(c.outputNote, []byte(signed), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "error: writing note to %s: %v\n", c.outputNote, err)
-		return subcommands.ExitFailure
-	}
-
 	return subcommands.ExitSuccess
 }
 
@@ -525,8 +501,8 @@ func (*checkpointStoreCmd) Usage() string {
   from the --cosig files, verifies the assembled checkpoint against the policy,
   and stores it as a Git ref.
 
-  This command is intended for non-HTTP witnesses (e.g. github-issue://) where
-  cosignatures are collected out-of-band.
+  Only supported with --mode ` + modeTlog + `; ` + modeGitCheckpoint + ` mode reaches
+  witnesses over HTTP only, so ` + "`git-ratchet checkpoint`" + ` stores the result itself.
 
 `
 }
@@ -543,6 +519,11 @@ func (c *checkpointStoreCmd) SetFlags(f *flag.FlagSet) {
 func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
 	if err := validateMode(c.mode); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+	if c.mode != modeTlog {
+		fmt.Fprintf(os.Stderr, "error: checkpoint-store requires --mode %s: %s mode reaches witnesses over HTTP only, "+
+			"so `git-ratchet checkpoint` stores the result directly\n", modeTlog, modeGitCheckpoint)
 		return subcommands.ExitUsageError
 	}
 	if err := checkpointRefFlag(c.mode, c.ref); err != nil {
@@ -575,38 +556,19 @@ func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...an
 		cosigLines = append(cosigLines, strings.TrimSpace(string(cosigData)))
 	}
 
-	if c.mode == modeTlog {
-		assembled := signed
-		for _, line := range cosigLines {
-			assembled = note.AppendSignature(assembled, line)
-		}
-		tpol, err := policy.FromPath(c.policyPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		if err := checkpointStoreTlog(c.repoDir, assembled, tpol); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		return subcommands.ExitSuccess
+	assembled := signed
+	for _, line := range cosigLines {
+		assembled = note.AppendSignature(assembled, line)
 	}
-
-	// Load the policy.
-	pol, err := policy.Load(c.policyPath)
+	tpol, err := policy.FromPath(c.policyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 		return subcommands.ExitFailure
 	}
-
-	// Assemble cosignatures, verify quorum, and store.
-	if err := assembleAndStoreCheckpoint(c.repoDir, c.ref, signed, cosigLines, pol); err != nil {
+	if err := checkpointStoreTlog(c.repoDir, assembled, tpol); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
-
-	cpRef := "refs/checkpoints/" + strings.TrimPrefix(c.ref, "refs/")
-	fmt.Printf("checkpoint stored at %s (%d cosignatures assembled)\n", cpRef, len(c.cosigPaths))
 	return subcommands.ExitSuccess
 }
 

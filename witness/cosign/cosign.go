@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command cosign reads an add-checkpoint request from stdin, verifies
-// the origin signature and ancestry proof, and writes the cosignature line to
-// stdout.
+// Command cosign witnesses a tlog-checkpoint delivered as a file rather than
+// as a POST, and writes the cosignature line to stdout. It is the witness half
+// of a github-issue witness.
+//
+// git-checkpoint mode is not served here. Its witnesses speak HTTP only; see
+// the witness command.
 //
 // Usage:
 //
@@ -22,7 +25,7 @@
 //	    --request request.txt \
 //	    --origin-vkeys origins.txt \
 //	    --key witness-key.pem \
-//	    [--stored-checkpoint stored.txt]
+//	    --stored-checkpoint stored.txt
 package main
 
 import (
@@ -35,17 +38,14 @@ import (
 	"os"
 	"strings"
 
-	"github.com/project-oak/git-ratchet/internal/gitutil"
 	"github.com/project-oak/git-ratchet/internal/note"
-	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
 var (
 	requestPath          = flag.String("request", "", "Path to add-checkpoint request file (required)")
 	originVKeysPath      = flag.String("origin-vkeys", "", "Path to file containing trusted origin vkeys (one per line)")
-	storedCheckpointPath = flag.String("stored-checkpoint", "", "Path to existing cosigned checkpoint file (optional)")
+	storedCheckpointPath = flag.String("stored-checkpoint", "", "Path to this witness's stored checkpoint file (required)")
 	keyPath              = flag.String("key", "", "Path to witness private key file (required)")
-	modeFlag             = flag.String("mode", "git-checkpoint", "Checkpoint format to witness: git-checkpoint or tlog")
 )
 
 func main() {
@@ -90,112 +90,14 @@ func main() {
 	}
 	bodyStr := string(bodyBytes)
 
-	// tlog mode is the same protocol an HTTP witness serves, carried as a file
+	// This is the same protocol an HTTP witness serves, carried as a file
 	// instead of a POST. The witness itself comes from transparency-dev.
-	switch *modeFlag {
-	case "tlog":
-		cosigLine, err := cosignTlog(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println(cosigLine)
-		return
-	case "git-checkpoint":
-	default:
-		fmt.Fprintf(os.Stderr, "error: --mode must be git-checkpoint or tlog, got %q\n", *modeFlag)
-		os.Exit(1)
-	}
-
-	// Step 1: Parse the request into ancestry proof and signed note.
-	ancestry, signedNote, err := iwitness.ParseAddCheckpointRequest(bodyStr)
+	cosigLine, err := cosignTlog(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Step 2: Parse the signed note.
-	noteBody, sigLines, err := note.ParseSignedNote(signedNote)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: parsing signed note: %v\n", err)
-		os.Exit(1)
-	}
-	if len(sigLines) == 0 {
-		fmt.Fprintln(os.Stderr, "error: missing origin signature")
-		os.Exit(1)
-	}
-
-	// Step 3: Verify the origin signature against trusted vkeys.
-	originSigName, err := note.SigName(sigLines[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: parsing origin signer name: %v\n", err)
-		os.Exit(1)
-	}
-
-	originKey, ok := trustedOrigins[originSigName]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "error: unknown origin: %s\n", originSigName)
-		os.Exit(1)
-	}
-
-	if err := note.VerifySignature(noteBody, sigLines[0], originKey.pub, originKey.sigType); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid origin signature: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Step 4: Parse checkpoint body.
-	_, ref, newCommit, err := note.ParseCheckpointBody(noteBody)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Step 5: If stored checkpoint exists, verify ancestry or immutability.
-	if *storedCheckpointPath != "" {
-		storedData, err := os.ReadFile(*storedCheckpointPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: reading stored checkpoint: %v\n", err)
-			os.Exit(1)
-		}
-		storedNoteBody, _, err := note.ParseSignedNote(string(storedData))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: parsing stored checkpoint: %v\n", err)
-			os.Exit(1)
-		}
-		_, _, storedCommit, err := note.ParseCheckpointBody(storedNoteBody)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: parsing stored checkpoint body: %v\n", err)
-			os.Exit(1)
-		}
-
-		if storedCommit != newCommit {
-			refKind, err := gitutil.ParseRefKind(ref)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: unrecognised ref: %v\n", err)
-				os.Exit(1)
-			}
-			if refKind == gitutil.RefTag {
-				fmt.Fprintf(os.Stderr, "error: tag checkpoint rejected: stored commit %s differs from submitted commit %s; tags are immutable\n",
-					storedCommit, newCommit)
-				os.Exit(1)
-			}
-
-			// Branch ratchet: ancestry verification required.
-			if err := iwitness.VerifyAncestry(ancestry, storedCommit, newCommit, len(newCommit)); err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-		}
-	}
-
-	// Step 6: Generate cosignature.
-	cosigLine, err := note.Cosign(signedNote, witnessSigner)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: generating cosignature: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Print(cosigLine)
+	fmt.Println(cosigLine)
 }
 
 // cosignOriginKey holds a trusted origin's public key and signature type.

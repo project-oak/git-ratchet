@@ -75,9 +75,9 @@ git-ratchet verify     --mode tlog --ref refs/heads/main --policy policy.txt
 
 git-ratchet supports two types of witnesses:
 
-- **Non-HTTP witnesses**: `checkpoint-request` and `checkpoint-store` decompose the flow so cosignatures can be collected out of band. Both modes support this.
+- **Non-HTTP witnesses**: `checkpoint-request` and `checkpoint-store` decompose the flow so cosignatures can be collected out of band (`tlog` mode only).
 - **HTTP witnesses**: A standalone server (deployed e.g. on Cloud Run) that responds to the [witness HTTP protocol](docs/witness-protocol.md). See [deploy/witness/README.md](deploy/witness/README.md) for deployment.
-- **GitHub Issue witnesses**: A GitHub repository that cosigns checkpoints via GitHub Actions, using GitHub Issues as the transport. See [docs/github-issue-witness.md](docs/github-issue-witness.md) for setup.
+- **GitHub Issue witnesses**: A GitHub repository that cosigns checkpoints via GitHub Actions, using GitHub Issues as the transport (`tlog` mode only). See [docs/github-issue-witness.md](docs/github-issue-witness.md) for setup.
 
 ## GitHub Actions
 
@@ -101,7 +101,7 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <n
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
-Witnesses with non-HTTP endpoints (e.g. `github-issue://`) are skipped with a warning. Use the decomposed workflow below or the [`actions/checkpoint`](actions/checkpoint) action, which handles both HTTP and GitHub Issue witnesses.
+In `git-checkpoint` mode, witnesses are reached over HTTP only; a policy naming a `github-issue://` witness is rejected. GitHub Issue witnesses serve `tlog` mode.
 
 ### `git-ratchet checkpoint-request`
 
@@ -116,7 +116,7 @@ git-ratchet checkpoint-request \
 
 Produces the add-checkpoint request body (ancestry proof + signed note) without contacting any witnesses. The output can later be submitted to witnesses out-of-band. The origin identity is derived from the key file; use `--origin` to override (required when using `--kms-key`).
 
-The decomposed workflow (`checkpoint-request` / `checkpoint-store`) supports both modes, so either can be witnessed over HTTP or by a GitHub Issue witness.
+The decomposed workflow (`checkpoint-request` / `checkpoint-store`) is `tlog`-only. It exists so a witness can be reached out of band, which is how a `github-issue://` witness is served.
 
 ### `git-ratchet checkpoint-store`
 
@@ -166,7 +166,7 @@ A standalone witness binary (built via `bazel build //witness/cosign`) that read
 
 ### Decomposed workflow
 
-The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md)), use the decomposed workflow (or the [`actions/checkpoint`](actions/checkpoint) action, which handles both):
+The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md)), use the decomposed workflow, which is `tlog`-only:
 
 ```bash
 # 1. Produce the request and signed note
@@ -298,7 +298,9 @@ bazel build //:git-ratchet
 
 ## Self-witnessing
 
-git-ratchet uses itself to protect its own `main` branch and release tags. Every push to `main` and every `v*` tag triggers the [checkpoint workflow](.github/workflows/checkpoint.yml), which submits the checkpoint to a [GitHub Issue witness](docs/github-issue-witness.md) at [`BenBirt/git-witness`](https://github.com/BenBirt/git-witness).
+git-ratchet uses itself to protect its own `main` branch and release tags. Every push to `main` and every `v*` tag triggers the [checkpoint workflow](.github/workflows/checkpoint.yml), which submits the checkpoint to a witness at [`BenBirt/git-witness`](https://github.com/BenBirt/git-witness).
+
+> **Note:** this repository's own policy names a `github-issue://` witness in `git-checkpoint` mode, which is no longer supported. It is being migrated to `tlog` mode.
 
 The witness policy is in [`ratchet-checkpoint.policy`](ratchet-checkpoint.policy). Anyone can verify the integrity of this repository:
 

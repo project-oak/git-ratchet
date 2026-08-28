@@ -36,7 +36,7 @@ import (
 // transport and the storage and nothing about the protocol.
 func cosignTlog(ctx context.Context, requestBody string, witnessKey *inote.Signer, origins map[string]cosignOriginKey, statePath string) (string, error) {
 	if statePath == "" {
-		return "", fmt.Errorf("--stored-checkpoint is required in tlog mode: a witness with no state cannot ratchet")
+		return "", fmt.Errorf("--stored-checkpoint is required: a witness with no state cannot ratchet")
 	}
 
 	req, err := iwitness.ParseTlogRequest(requestBody)

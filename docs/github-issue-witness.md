@@ -9,6 +9,11 @@ comment.
 The witness state is stored in the repo itself as committed files, and the
 full audit trail is preserved in the repo's commit history.
 
+A `github-issue` witness serves [`tlog` mode](tlog-variant.md) only.
+`git-checkpoint` mode reaches its witnesses over HTTP, because its witnesses
+verify Git commit ancestry and so must run git-ratchet's own witness; see
+[docs/witness-protocol.md](witness-protocol.md).
+
 ## Policy format
 
 In a policy file, declare a GitHub Issue witness using the `github-issue://`
