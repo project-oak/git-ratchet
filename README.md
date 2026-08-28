@@ -300,8 +300,6 @@ bazel build //:git-ratchet
 
 git-ratchet uses itself to protect its own `main` branch and release tags. Every push to `main` and every `v*` tag triggers the [checkpoint workflow](.github/workflows/checkpoint.yml), which submits the checkpoint to a witness at [`BenBirt/git-witness`](https://github.com/BenBirt/git-witness).
 
-> **Note:** this repository's own policy names a `github-issue://` witness in `git-checkpoint` mode, which is no longer supported. It is being migrated to `tlog` mode.
-
 The witness policy is in [`ratchet-checkpoint.policy`](ratchet-checkpoint.policy). Anyone can verify the integrity of this repository:
 
 ```bash

@@ -9,15 +9,10 @@ cosignatures, evaluates quorum, and stores the result.
 1. Checks out the repository with full history (`fetch-depth: 0`).
 2. Installs git-ratchet via the [`setup`](../setup) action.
 3. Fetches existing checkpoint refs from origin.
-4. Creates a checkpoint request (signs the checkpoint and builds an ancestry
-   proof).
-5. Submits to every witness declared in the policy file:
-   - **HTTP witnesses** — direct `POST` to the witness URL.
-   - **`github-issue://` witnesses** — creates a GitHub Issue on the witness
-     repo, then polls for a cosignature comment until the issue is closed or
-     the timeout expires.
-6. Assembles cosignatures, verifies quorum, and stores the checkpoint.
-7. Pushes the checkpoint ref (`refs/checkpoints/…`) to origin.
+4. Runs `git-ratchet checkpoint`, which signs the checkpoint, submits it to
+   every witness declared in the policy file, verifies quorum, and stores the
+   result.
+5. Pushes the checkpoint ref (`refs/checkpoints/…`) to origin.
 
 ## Inputs
 
@@ -28,7 +23,7 @@ cosignatures, evaluates quorum, and stores the result.
 | `policy` | Yes | — | Path to the witness policy file (relative to repo root). |
 | `github-token` | No | `github.token` | GitHub token with permission to create issues on witness repos. |
 | `version` | No | `latest` | git-ratchet version to install. |
-| `timeout` | No | `300` | Timeout in seconds for GitHub Issue witness polling. |
+| `timeout` | No | `300` | Seconds to wait for each witness to cosign. |
 
 ## Permissions
 
@@ -60,8 +55,8 @@ jobs:
           policy: ratchet-checkpoint.policy
 ```
 
-For `github-issue://` witnesses, pass a token that can create issues on the
-witness repo:
+`github-issue://` witnesses serve [`tlog` mode](../../docs/tlog-variant.md).
+Reaching one needs a token that can create issues on the witness repo:
 
 ```yaml
           github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}

@@ -28,6 +28,10 @@ inputs:
   policy:
     description: 'Path to the witness policy file (relative to repo root)'
     required: true
+  github-token:
+    description: 'GitHub token with permission to create issues on witness repos'
+    required: false
+    default: ${{ github.token }}
   version:
     description: 'git-ratchet version to install (e.g. "v0.1.0"). Defaults to latest.'
     required: false
@@ -35,7 +39,7 @@ inputs:
   timeout:
     description: 'Seconds to wait for each witness to cosign'
     required: false
-    default: '30'
+    default: '300'
 
 runs:
   using: 'composite'
