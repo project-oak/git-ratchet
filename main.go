@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -50,6 +51,13 @@ func main() {
 	os.Exit(int(subcommands.Execute(ctx)))
 }
 
+// witnessClient returns the HTTP client witnesses are reached through. The
+// transports it carries determine which witness endpoints can be served; the
+// deadline is the caller's, via the request context.
+func witnessClient() *http.Client {
+	return &http.Client{}
+}
+
 type checkpointCmd struct {
 	ref        string
 	origin     string
@@ -58,6 +66,7 @@ type checkpointCmd struct {
 	kmsKey     string
 	repoDir    string
 	mode       string
+	timeout    time.Duration
 }
 
 func (*checkpointCmd) Name() string     { return "checkpoint" }
@@ -98,6 +107,7 @@ func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
+	f.DurationVar(&c.timeout, "witness-timeout", 30*time.Second, "How long to wait for each witness to cosign")
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
@@ -151,7 +161,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 			fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 			return subcommands.ExitFailure
 		}
-		if err := checkpointTlog(c.repoDir, origin, signer, tpol); err != nil {
+		if err := checkpointTlog(c.repoDir, origin, signer, tpol, witnessClient(), c.timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return subcommands.ExitFailure
 		}
@@ -174,8 +184,9 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	}
 
 	// Phase 2: Collect cosignatures from witnesses in parallel.
-	// Each witness gets its own 30-second deadline so a hung or slow witness
-	// does not block the command indefinitely.
+	// Each witness gets its own deadline so a hung or slow witness does not
+	// block the command indefinitely.
+	client := witnessClient()
 	type cosigResult struct {
 		policyName string
 		cosigLine  string
@@ -185,14 +196,14 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	ch := make(chan cosigResult, len(witnesses))
 	for _, w := range witnesses {
 		go func(w *policy.Witness) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()
 			// Skip witnesses with non-HTTP endpoints.
 			if w.Endpoint != "" && !strings.HasPrefix(w.Endpoint, "http://") && !strings.HasPrefix(w.Endpoint, "https://") {
 				ch <- cosigResult{w.PolicyName, "", fmt.Errorf("unsupported witness transport %q (use checkpoint-request + checkpoint-store for non-HTTP witnesses)", w.Endpoint)}
 				return
 			}
-			line, err := witness.Cosign(ctx, w.Endpoint, ancestry, signed)
+			line, err := witness.Cosign(ctx, client, w.Endpoint, ancestry, signed)
 			ch <- cosigResult{w.PolicyName, line, err}
 		}(w)
 	}
