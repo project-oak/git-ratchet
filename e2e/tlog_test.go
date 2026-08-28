@@ -562,7 +562,7 @@ func TestTlogDecomposedWorkflow(t *testing.T) {
 		}
 
 		cosig, err := exec.Command(f.cosignBin,
-			"--mode", "tlog", "--request", requestPath, "--origin-vkeys", originsPath,
+			"--request", requestPath, "--origin-vkeys", originsPath,
 			"--key", witnessKeyPath, "--stored-checkpoint", statePath,
 		).Output()
 		if err != nil {
