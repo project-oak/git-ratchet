@@ -41,8 +41,6 @@ func main() {
 
 	subcommands.Register(&logCmd{}, "")
 	subcommands.Register(&checkpointCmd{}, "")
-	subcommands.Register(&checkpointRequestCmd{}, "")
-	subcommands.Register(&checkpointStoreCmd{}, "")
 	subcommands.Register(&verifyCmd{}, "")
 	subcommands.Register(&auditCmd{}, "")
 
@@ -424,209 +422,12 @@ func (c *logCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomman
 	return subcommands.ExitSuccess
 }
 
-type checkpointRequestCmd struct {
-	ref           string
-	origin        string
-	keyPath       string
-	kmsKey        string
-	repoDir       string
-	outputRequest string
-	outputNote    string
-	mode          string
-}
-
-func (*checkpointRequestCmd) Name() string { return "checkpoint-request" }
-func (*checkpointRequestCmd) Synopsis() string {
-	return "Produce an add-checkpoint request body without contacting witnesses"
-}
-func (*checkpointRequestCmd) Usage() string {
-	return `checkpoint-request [flags]:
-  Produce the add-checkpoint request body and the signed checkpoint note
-  without contacting any witnesses.
-
-  The output can be submitted to a witness separately, which is how a
-  github-issue:// witness is reached. Only supported with --mode ` + modeTlog + `;
-  ` + modeGitCheckpoint + ` mode reaches witnesses over HTTP only.
-`
-}
-
-func (c *checkpointRequestCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
-	f.StringVar(&c.origin, "origin", "", "Origin identity for the checkpoint (required for --kms-key, derived from --key if omitted)")
-	f.StringVar(&c.keyPath, "key", "", "Path to origin private key file (required unless --kms-key is set)")
-	f.StringVar(&c.kmsKey, "kms-key", "", "GCP KMS key resource name for remote signing (alternative to --key)")
-	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
-	f.StringVar(&c.outputRequest, "output-request", "", "Write the full add-checkpoint wire format to this file (required)")
-	f.StringVar(&c.outputNote, "output-note", "", "Write just the signed note to this file (required)")
-	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
-}
-
-func (c *checkpointRequestCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if err := validateMode(c.mode); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitUsageError
-	}
-	if c.mode != modeTlog {
-		fmt.Fprintf(os.Stderr, "error: checkpoint-request requires --mode %s: %s mode reaches witnesses over HTTP only, "+
-			"so `git-ratchet checkpoint` contacts them directly\n", modeTlog, modeGitCheckpoint)
-		return subcommands.ExitUsageError
-	}
-	if err := checkpointRefFlag(c.mode, c.ref); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		fmt.Fprint(os.Stderr, c.Usage())
-		return subcommands.ExitUsageError
-	}
-	if c.outputRequest == "" || c.outputNote == "" || (c.keyPath == "" && c.kmsKey == "") {
-		fmt.Fprintln(os.Stderr, "error: --output-request, --output-note, and one of --key or --kms-key are required")
-		fmt.Fprint(os.Stderr, c.Usage())
-		return subcommands.ExitUsageError
-	}
-	if c.keyPath != "" && c.kmsKey != "" {
-		fmt.Fprintln(os.Stderr, "error: --key and --kms-key are mutually exclusive")
-		return subcommands.ExitUsageError
-	}
-
-	if c.kmsKey != "" && c.origin == "" {
-		fmt.Fprintln(os.Stderr, "error: --origin is required when using --kms-key")
-		return subcommands.ExitUsageError
-	}
-
-	// Load the origin signing key.
-	var signer *note.Signer
-	var err error
-	if c.kmsKey != "" {
-		signer, err = note.NewKMSSigner(context.Background(), c.origin, c.kmsKey, note.RoleOrigin)
-	} else {
-		signer, err = note.ReadKeyFile(c.keyPath, note.RoleOrigin)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: loading key: %v\n", err)
-		return subcommands.ExitFailure
-	}
-
-	// Use the origin name from the flag, or derive from the key.
-	origin := c.origin
-	if origin == "" {
-		origin = signer.Name
-	}
-
-	request, signed, err := checkpointRequestTlog(c.repoDir, origin, signer)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	if err := writeRequestFiles(c.outputRequest, request, c.outputNote, signed); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	return subcommands.ExitSuccess
-}
-
-// stringSlice is a flag.Value that collects repeated --cosig flags.
+// stringSlice is a flag.Value that collects a repeated flag's values.
 type stringSlice []string
 
 func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 func (s *stringSlice) Get() any           { return []string(*s) }
-
-type checkpointStoreCmd struct {
-	ref        string
-	policyPath string
-	notePath   string
-	cosigPaths stringSlice
-	repoDir    string
-	mode       string
-}
-
-func (*checkpointStoreCmd) Name() string { return "checkpoint-store" }
-func (*checkpointStoreCmd) Synopsis() string {
-	return "Assemble and store a cosigned checkpoint from files"
-}
-func (*checkpointStoreCmd) Usage() string {
-	return `checkpoint-store [flags]:
-  Assemble a cosigned checkpoint from a signed note and cosignature files.
-
-  Reads the signed note produced by checkpoint-request, appends each cosignature
-  from the --cosig files, verifies the assembled checkpoint against the policy,
-  and stores it as a Git ref.
-
-  Only supported with --mode ` + modeTlog + `; ` + modeGitCheckpoint + ` mode reaches
-  witnesses over HTTP only, so ` + "`git-ratchet checkpoint`" + ` stores the result itself.
-
-`
-}
-
-func (c *checkpointStoreCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&c.ref, "ref", "", "Full ref path to checkpoint (e.g. refs/heads/main or refs/tags/v1.0.0) (required)")
-	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
-	f.StringVar(&c.notePath, "note", "", "Path to the signed note file (required)")
-	f.Var(&c.cosigPaths, "cosig", "Path to a cosignature file (repeatable)")
-	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
-	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
-}
-
-func (c *checkpointStoreCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if err := validateMode(c.mode); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitUsageError
-	}
-	if c.mode != modeTlog {
-		fmt.Fprintf(os.Stderr, "error: checkpoint-store requires --mode %s: %s mode reaches witnesses over HTTP only, "+
-			"so `git-ratchet checkpoint` stores the result directly\n", modeTlog, modeGitCheckpoint)
-		return subcommands.ExitUsageError
-	}
-	if err := checkpointRefFlag(c.mode, c.ref); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		fmt.Fprint(os.Stderr, c.Usage())
-		return subcommands.ExitUsageError
-	}
-	if c.policyPath == "" || c.notePath == "" {
-		fmt.Fprintln(os.Stderr, "error: --policy and --note are required")
-		fmt.Fprint(os.Stderr, c.Usage())
-		return subcommands.ExitUsageError
-	}
-
-	// Read the signed note.
-	noteData, err := os.ReadFile(c.notePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: reading note file: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	signed := string(noteData)
-
-	// Each --cosig file holds the witness's response to the add-checkpoint
-	// request, as message/http. Reading it as one is what lets a refusal be
-	// told from a cosignature, rather than appending whatever the file held.
-	var cosigLines []string
-	for _, cosigPath := range c.cosigPaths {
-		cosigData, err := os.ReadFile(cosigPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: reading witness response %s: %v\n", cosigPath, err)
-			return subcommands.ExitFailure
-		}
-		line, err := cosignatureFromResponse(string(cosigData))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: witness response %s: %v\n", cosigPath, err)
-			return subcommands.ExitFailure
-		}
-		cosigLines = append(cosigLines, line)
-	}
-
-	assembled := signed
-	for _, line := range cosigLines {
-		assembled = note.AppendSignature(assembled, line)
-	}
-	tpol, err := policy.FromPath(c.policyPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	if err := checkpointStoreTlog(c.repoDir, assembled, tpol); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitFailure
-	}
-	return subcommands.ExitSuccess
-}
 
 type verifyCmd struct {
 	refs       stringSlice
@@ -917,16 +718,4 @@ func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomm
 	}
 	fmt.Println("\naudit: all checks passed")
 	return subcommands.ExitSuccess
-}
-
-// writeRequestFiles writes the add-checkpoint request and the signed note that
-// checkpoint-request produces.
-func writeRequestFiles(requestPath, request, notePath, signed string) error {
-	if err := os.WriteFile(requestPath, []byte(request), 0644); err != nil {
-		return fmt.Errorf("writing request to %s: %w", requestPath, err)
-	}
-	if err := os.WriteFile(notePath, []byte(signed), 0644); err != nil {
-		return fmt.Errorf("writing note to %s: %w", notePath, err)
-	}
-	return nil
 }

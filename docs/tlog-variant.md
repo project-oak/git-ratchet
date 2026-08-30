@@ -290,27 +290,17 @@ a mistake in one agree with the same mistake in the other.
 
 ### Witnesses reached by other transports
 
-`checkpoint --mode tlog` contacts HTTP witnesses itself. A witness reached some
-other way — the [GitHub Issue witness](github-issue-witness.md), whose transport
-is an issue thread rather than a POST — is served by the same request body
-carried as a file:
+`checkpoint --mode tlog` contacts every witness in the policy itself, whatever
+carries it. A witness reached over HTTP is a POST; a
+[GitHub Issue witness](github-issue-witness.md) is an issue and a comment.
 
-```
-git-ratchet checkpoint-request --mode tlog --output-request req --output-note note
-witness-cosign --mode tlog --request req --origin-vkeys v --key k --stored-checkpoint s > cosig
-git-ratchet checkpoint-store --mode tlog --policy p --note note --cosig cosig
-```
-
-Only the delivery differs. The body is the `add-checkpoint` body, and the
-witness is `transparency-dev/witness`, so every rule in [tlog-witness][] applies
-unchanged — including the ratchet, which is why `--stored-checkpoint` is
-required rather than optional as it is in `git-checkpoint` mode.
-
-`checkpoint-request` writes nothing: it describes the log as `log` left it.
-`checkpoint-store` refuses to store a checkpoint whose size and root hash the
-log does not reproduce, since the cosignatures are over a tree. A `log` run
-landing in between therefore invalidates the request rather than corrupting
-anything, and the request is rebuilt.
+The carrier is an `http.RoundTripper` registered for the witness's URL scheme,
+so the code that submits a checkpoint does not know which one it got. Only the
+delivery differs: the messages are the `add-checkpoint` request and response,
+and the witness is `transparency-dev/witness`, so every rule in
+[tlog-witness][] applies unchanged — including the ratchet, which is why
+`--stored-checkpoint` is required of a GitHub Issue witness rather than
+optional as it is in `git-checkpoint` mode.
 
 A witness that holds a different tree size answers 409 with the size it does
 hold, and the client regenerates its consistency proof from there and resubmits

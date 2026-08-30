@@ -15,12 +15,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,7 +32,6 @@ import (
 	"github.com/project-oak/git-ratchet/internal/gitutil"
 	"github.com/project-oak/git-ratchet/internal/note"
 	"github.com/project-oak/git-ratchet/internal/tlog"
-	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
 // Checkpoint format modes. See docs/tlog-variant.md for how they differ.
@@ -419,129 +415,6 @@ func checkLogChains(repoDir string, l *gitlog.Log) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// checkpointRequestTlog builds the add-checkpoint request a witness needs,
-// without contacting one and without writing to the log.
-//
-// It describes the log as it stands. Nothing durable changes here, so a log
-// entry landing before checkpointStoreTlog runs invalidates the request rather
-// than corrupting anything; that command says so and the request is rebuilt.
-func checkpointRequestTlog(repoDir, origin string, signer *note.Signer) (request, signedNote string, err error) {
-	l, oldSize, err := logToCheckpoint(repoDir)
-	if err != nil {
-		return "", "", err
-	}
-
-	cp := tlog.NewCheckpoint(origin, l.Size(), l.Root())
-	signedNote, err = note.SignTlogCheckpoint(string(cp.Marshal()), signer)
-	if err != nil {
-		return "", "", fmt.Errorf("signing checkpoint: %w", err)
-	}
-
-	proof, err := l.ConsistencyProofFrom(oldSize)
-	if err != nil {
-		return "", "", fmt.Errorf("generating consistency proof from size %d: %w", oldSize, err)
-	}
-
-	body := addCheckpointBody(oldSize, proof, signedNote)
-	req, err := http.NewRequest(http.MethodPost, iwitness.AddCheckpointPath, strings.NewReader(body))
-	if err != nil {
-		return "", "", fmt.Errorf("building add-checkpoint request: %w", err)
-	}
-	req.Host = iwitness.MessageHost
-	req.ContentLength = int64(len(body))
-	// Left unset, Write inserts Go's default; the carrier is not a user agent.
-	req.Header.Set("User-Agent", "")
-	msg, err := iwitness.MarshalMessage(req)
-	if err != nil {
-		return "", "", err
-	}
-	return msg, signedNote, nil
-}
-
-// addCheckpointBody renders the tlog-witness add-checkpoint request body: an
-// old size line, one line per consistency proof hash, an empty line, then the
-// signed checkpoint.
-func addCheckpointBody(oldSize uint64, proof []tlog.Hash, signedNote string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "old %d\n", oldSize)
-	for _, h := range proof {
-		b.WriteString(base64.StdEncoding.EncodeToString(h[:]))
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(signedNote)
-	return b.String()
-}
-
-// cosignatureFromResponse extracts the cosignature lines from a witness's
-// add-checkpoint response, given as message/http.
-//
-// A witness that refused says so in its status, and the reason is worth
-// reporting rather than assembling a checkpoint that cannot satisfy the
-// quorum. A size conflict names the size the witness holds, which is what a
-// fresh checkpoint-request would need to build a proof from.
-func cosignatureFromResponse(message string) (string, error) {
-	resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(message)), nil)
-	if err != nil {
-		return "", fmt.Errorf("parsing response message: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading response body: %w", err)
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return strings.TrimSpace(string(body)), nil
-	case http.StatusConflict:
-		if resp.Header.Get("Content-Type") == "text/x.tlog.size" {
-			return "", fmt.Errorf("witness holds tree size %s; rebuild the request with checkpoint-request",
-				strings.TrimSpace(string(body)))
-		}
-		return "", fmt.Errorf("witness holds a different tree at this size")
-	default:
-		return "", fmt.Errorf("witness returned %s", resp.Status)
-	}
-}
-
-// checkpointStoreTlog stores a checkpoint assembled elsewhere, after checking
-// that the cosignatures cover the tree the log currently holds.
-func checkpointStoreTlog(repoDir, assembled string, pol *fpolicy.TLogPolicy) error {
-	if _, err := pol.Verify([]byte(assembled)); err != nil {
-		return fmt.Errorf("checkpoint rejected by policy: %w", err)
-	}
-
-	body, err := note.ExtractBody(assembled)
-	if err != nil {
-		return fmt.Errorf("parsing checkpoint: %w", err)
-	}
-	cp, cpRoot, err := tlog.ParseCheckpoint(body)
-	if err != nil {
-		return fmt.Errorf("malformed checkpoint: %w", err)
-	}
-
-	l, err := gitlog.Open(repoDir)
-	if err != nil {
-		return fmt.Errorf("opening log: %w", err)
-	}
-	// The cosignatures are over a tree, so the only way to know they apply to
-	// what is about to be written is to rebuild that tree and compare. The
-	// chains are not rechecked here: that check exists to keep a broken one
-	// from being cosigned, and by now it has been.
-	if cp.Size != l.Size() || l.Root() != cpRoot {
-		return fmt.Errorf("checkpoint commits to a tree of size %d that this repository does not reproduce "+
-			"(the log holds %d entries); the log may have grown since checkpoint-request, in which case "+
-			"rebuild the request", cp.Size, l.Size())
-	}
-
-	if err := l.Save(assembled, checkpointMessage(l)); err != nil {
-		return err
-	}
-	fmt.Printf("checkpoint stored at %s (log size %d)\n", gitlog.LogRef, l.Size())
 	return nil
 }
 
