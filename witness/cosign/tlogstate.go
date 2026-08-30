@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -70,6 +71,11 @@ func (s *fileState) Update(ctx context.Context, origin string, f func([]byte) ([
 	}
 	if next == nil {
 		return nil
+	}
+	// An origin's name has path components of its own, so the directory the
+	// state file sits in may not exist on the first accepted submission.
+	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+		return err
 	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, next, 0644); err != nil {

@@ -92,10 +92,8 @@ runs:
         printf '%s\n' "$WITNESS_KEY" > "${RUNNER_TEMP}/witness.vkey"
         chmod 600 "${RUNNER_TEMP}/witness.vkey"
 
-        # One log per origin, so one state file per origin. cosign creates it
-        # on the first accepted submission and ratchets from it thereafter.
-        mkdir -p "$(dirname "checkpoints/${ORIGIN}")"
-
+        # One log per origin, so one state file per origin. cosign creates it,
+        # and its directory, on the first accepted submission.
         cosign \
           --request "${RUNNER_TEMP}/request.txt" \
           --origin-vkeys "origins/${ORIGIN}" \
