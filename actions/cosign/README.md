@@ -20,11 +20,11 @@ This action should be triggered by `issues: opened` events.
 2. Installs the standalone `cosign` binary.
 3. Reads the `http` fenced code block from the issue body: one `message/http`
    add-checkpoint request.
-4. Verifies the origin is registered (`checkpoints/<origin>/vkeys.txt` must
-   exist).
+4. Verifies the origin is registered (`origins/<origin>` must exist).
 5. Runs the cosign binary, which answers the request with the standard
    `add-checkpoint` handler.
-6. Commits the updated state under `checkpoints/<origin>/checkpoint`.
+6. Commits the updated state at `checkpoints/<origin>`, if the request was
+   accepted and the state changed.
 7. Posts the response as a comment, whatever its status.
 8. Closes the issue (`completed` once answered, `not planned` on failure).
 
@@ -36,12 +36,15 @@ This action should be triggered by `issues: opened` events.
 ## Witness Repository Layout
 
 ```
+origins/
+  <origin>                 # Trusted origin verifier keys (one per line)
 checkpoints/
-  <origin>/
-    vkeys.txt              # Trusted origin verifier keys (one per line)
-    refs/heads/main        # Last cosigned checkpoint for this ref
-    refs/tags/v1.0.0       # Last cosigned checkpoint for this tag
+  <origin>                 # Last cosigned checkpoint for this origin's log
 ```
+
+`<origin>` is the origin identifier, so a witness for
+`github.com/example/repo` has `origins/github.com/example/repo` and
+`checkpoints/github.com/example/repo`.
 
 ## Example Workflow
 

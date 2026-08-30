@@ -97,14 +97,16 @@ When an issue arrives, the cosign action:
 
 1. Reads the `http` block from the issue body.
 2. Takes the origin from the first line of the checkpoint, and checks it is
-   registered (has a `checkpoints/<origin>/vkeys.txt`).
+   registered (has an `origins/<origin>` file of trusted keys).
 3. Runs the `cosign` binary, which parses the request, hands it to
    [transparency-dev/witness][witness-impl]'s own `add-checkpoint` handler, and
    serialises what that handler returns. A `github-issue` witness therefore
    answers exactly as an HTTP one would, down to the status code and the
    `Content-Type` on a size conflict.
-4. Commits the updated state at `checkpoints/<origin>/checkpoint`. There is one
-   log per origin, so there is one state file per origin.
+4. Commits the updated state at `checkpoints/<origin>`. There is one log per
+   origin, so there is one state file per origin. A refused request writes no
+   state, and a resubmission at the size already held writes nothing new;
+   neither is an error, and neither stops the response being posted.
 5. Posts the response as a comment, whatever its status: a refusal is an
    answer, and the origin needs to read it.
 6. Closes the issue.
@@ -143,25 +145,27 @@ Add the full contents of the key file as a GitHub Actions secret (e.g.
 
 ### 4. Create the directory structure
 
-For each origin you want to witness, create:
+For each origin you want to witness, create a file listing its trusted verifier
+keys, one per line; lines starting with `#` are comments:
 
 ```
-checkpoints/<origin>/vkeys.txt
+origins/<origin>
 ```
 
-where `<origin>` is the origin identifier (e.g. `github.com/example/repo`).
-The `vkeys.txt` file lists trusted origin verifier keys, one per line. Lines
-starting with `#` are comments.
+where `<origin>` is the origin identifier, so
+`origins/github.com/example/repo`. The path components come from the origin's
+own name, not from any structure the witness adds.
 
-As the witness cosigns checkpoints, its state is committed alongside the keys:
+As the witness cosigns, it keeps its state in a matching file:
 
 ```
-checkpoints/<origin>/checkpoint
+checkpoints/<origin>
 ```
 
-For example: `checkpoints/github.com/example/repo/checkpoint`. There is one log
-per origin, so there is one state file per origin; the ratchet is over the
-log's tree size, not over any one ref.
+One log per origin means one state file per origin: the ratchet is over the
+log's tree size, not over any one ref. Registration and state are separate
+trees so that each is a single file, and so that `git log checkpoints/<origin>`
+is that origin's witnessing history and nothing else.
 
 ### 5. Create a workflow
 

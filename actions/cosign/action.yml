@@ -48,11 +48,11 @@ runs:
             core.setFailed('No http block found in issue body');
             return;
           }
-          const request = match[1].replace(/\r\n/g, '\n').trimEnd() + '\n';
+          const request = match[1];
 
-          // The witness needs the origin to pick its vkeys and its stored
-          // state. It is the first line of the checkpoint, which sits after
-          // the HTTP headers and then after the add-checkpoint preamble.
+          // The witness needs the origin to pick its trusted keys and its
+          // stored state. It is the first line of the checkpoint, which sits
+          // after the HTTP headers and then after the add-checkpoint preamble.
           const httpBody = request.split('\n\n').slice(1).join('\n\n');
           const note = httpBody.split('\n\n').slice(1).join('\n\n');
           const origin = note.split('\n')[0];
@@ -72,7 +72,7 @@ runs:
         ISSUE: ${{ github.event.issue.number }}
         GH_TOKEN: ${{ github.token }}
       run: |
-        if [ ! -f "checkpoints/${ORIGIN}/vkeys.txt" ]; then
+        if [ ! -f "origins/${ORIGIN}" ]; then
           gh issue comment "$ISSUE" \
             --body "❌ Origin \`${ORIGIN}\` is not registered."
           gh issue close "$ISSUE" --reason "not planned"
@@ -92,14 +92,14 @@ runs:
         printf '%s\n' "$WITNESS_KEY" > "${RUNNER_TEMP}/witness.vkey"
         chmod 600 "${RUNNER_TEMP}/witness.vkey"
 
-        # One log per origin, so the state is per origin. cosign creates the
-        # file on the first submission and ratchets from it thereafter.
-        mkdir -p "checkpoints/${ORIGIN}"
+        # One log per origin, so one state file per origin. cosign creates it
+        # on the first accepted submission and ratchets from it thereafter.
+        mkdir -p "$(dirname "checkpoints/${ORIGIN}")"
 
         cosign \
           --request "${RUNNER_TEMP}/request.txt" \
-          --origin-vkeys "checkpoints/${ORIGIN}/vkeys.txt" \
-          --stored-checkpoint "checkpoints/${ORIGIN}/checkpoint" \
+          --origin-vkeys "origins/${ORIGIN}" \
+          --stored-checkpoint "checkpoints/${ORIGIN}" \
           --key "${RUNNER_TEMP}/witness.vkey" \
           > "${RUNNER_TEMP}/response.txt"
 
@@ -111,16 +111,21 @@ runs:
       env:
         ORIGIN: ${{ steps.parse.outputs.origin }}
       run: |
-        # cosign wrote the state itself; a run that changed nothing -- a
-        # resubmission at the size already held -- leaves nothing to commit.
+        # cosign writes the state itself, and only when it accepts. A refusal
+        # leaves no file to commit, or an unchanged one; neither is a failure,
+        # and treating them as one would stop the response being posted below.
+        if [ ! -f "checkpoints/${ORIGIN}" ]; then
+          echo "no state written: the request was refused"
+          exit 0
+        fi
         git config user.name "witness-bot"
         git config user.email "witness-bot@users.noreply.github.com"
-        git add "checkpoints/${ORIGIN}/checkpoint"
+        git add "checkpoints/${ORIGIN}"
         if git diff --cached --quiet; then
           echo "witness state unchanged"
           exit 0
         fi
-        SIZE=$(sed -n '2p' "checkpoints/${ORIGIN}/checkpoint")
+        SIZE=$(sed -n '2p' "checkpoints/${ORIGIN}")
         git commit -m "cosign: ${ORIGIN} @ size ${SIZE}"
         git push
 
