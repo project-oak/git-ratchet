@@ -35,6 +35,21 @@ The exchange is the [tlog-witness][] `add-checkpoint` exchange, unchanged. Only
 the wire differs: an issue carries the request and a comment carries the
 response, in place of a POST and its reply.
 
+`git-ratchet checkpoint` reaches such a witness itself, given a token that can
+open an issue on the witness repository:
+
+```bash
+git-ratchet checkpoint --mode tlog --key origin.key --policy policy.txt \
+    --github-token "$TOKEN" --witness-timeout 5m
+```
+
+A policy naming a `github-issue://` witness with no token is an error rather
+than a skipped witness: skipping would lower the quorum without saying so. The
+timeout is the whole wait for a reply, which is as long as the witness's
+workflow takes to queue and run, so it wants to be minutes rather than the 30s
+default. `GITHUB_API_URL` selects a GitHub Enterprise instance, as it does for
+every other GitHub tool.
+
 [tlog-witness]: https://c2sp.org/tlog-witness
 
 ### Framing
@@ -90,6 +105,20 @@ issue.
 Carrying two exchanges on one issue would be HTTP/1.1 pipelining, where a
 response is paired to a request by ordering. The witness is a workflow run per
 message, and two runs can finish out of order, so the pairing would not hold.
+
+### Origin side
+
+`checkpoint` registers a transport for the `github-issue` scheme, so a witness
+reached this way goes through the same client as one reached over HTTP. It:
+
+1. Opens an issue on the witness repository titled `checkpoint: <origin>`, with
+   the request in an `http` block.
+2. Polls the issue until a comment carries an `http` block, or the issue closes
+   without one, or the timeout expires.
+3. Reads that comment as the witness's response.
+
+A witness that fails before answering closes the issue with an error comment,
+which ends the wait rather than running it out to the timeout.
 
 ### Witness side (`actions/cosign`)
 

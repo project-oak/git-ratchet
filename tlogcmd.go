@@ -198,10 +198,6 @@ func collectTlogCosignatures(pol *fpolicy.TLogPolicy, client *http.Client, timeo
 				ch <- result{w.Name, "", fmt.Errorf("witness %s declares no URL", w.Name)}
 				return
 			}
-			if w.URL.Scheme != "http" && w.URL.Scheme != "https" {
-				ch <- result{w.Name, "", fmt.Errorf("unsupported witness transport %q for tlog mode", w.URL.Scheme)}
-				return
-			}
 			line, err := cosignWithWitness(ctx, client, w.URL, l, oldSize, signed)
 			ch <- result{w.Name, line, err}
 		}(w)

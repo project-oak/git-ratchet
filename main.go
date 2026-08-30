@@ -54,19 +54,42 @@ func main() {
 // witnessClient returns the HTTP client witnesses are reached through. The
 // transports it carries determine which witness endpoints can be served; the
 // deadline is the caller's, via the request context.
-func witnessClient() *http.Client {
-	return &http.Client{}
+//
+// A github-issue witness is served by registering a transport for its scheme,
+// so the code that submits a checkpoint does not know which carrier it got.
+func witnessClient(githubToken string) *http.Client {
+	t := &http.Transport{}
+	t.RegisterProtocol(witness.IssueScheme, &witness.IssueTransport{Token: githubToken})
+	return &http.Client{Transport: t}
+}
+
+// requireGitHubToken reports whether the policy names a witness this client
+// cannot reach without a token.
+//
+// Skipping such a witness would quietly lower the quorum, so an unreachable
+// one is a usage error rather than a warning.
+func requireGitHubToken(endpoints []string, token string) error {
+	if token != "" {
+		return nil
+	}
+	for _, e := range endpoints {
+		if strings.HasPrefix(e, witness.IssueScheme+"://") {
+			return fmt.Errorf("witness %s needs --github-token: a token that can open an issue on the witness repository", e)
+		}
+	}
+	return nil
 }
 
 type checkpointCmd struct {
-	ref        string
-	origin     string
-	policyPath string
-	keyPath    string
-	kmsKey     string
-	repoDir    string
-	mode       string
-	timeout    time.Duration
+	ref         string
+	origin      string
+	policyPath  string
+	keyPath     string
+	kmsKey      string
+	repoDir     string
+	mode        string
+	timeout     time.Duration
+	githubToken string
 }
 
 func (*checkpointCmd) Name() string     { return "checkpoint" }
@@ -108,6 +131,7 @@ func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
 	f.DurationVar(&c.timeout, "witness-timeout", 30*time.Second, "How long to wait for each witness to cosign")
+	f.StringVar(&c.githubToken, "github-token", "", "GitHub token for reaching github-issue:// witnesses")
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
@@ -161,7 +185,17 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 			fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
 			return subcommands.ExitFailure
 		}
-		if err := checkpointTlog(c.repoDir, origin, signer, tpol, witnessClient(), c.timeout); err != nil {
+		endpoints := make([]string, 0, len(tpol.Witnesses))
+		for _, w := range tpol.Witnesses {
+			if w.URL != nil {
+				endpoints = append(endpoints, w.URL.String())
+			}
+		}
+		if err := requireGitHubToken(endpoints, c.githubToken); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return subcommands.ExitUsageError
+		}
+		if err := checkpointTlog(c.repoDir, origin, signer, tpol, witnessClient(c.githubToken), c.timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return subcommands.ExitFailure
 		}
@@ -186,7 +220,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	// Phase 2: Collect cosignatures from witnesses in parallel.
 	// Each witness gets its own deadline so a hung or slow witness does not
 	// block the command indefinitely.
-	client := witnessClient()
+	client := witnessClient("")
 	type cosigResult struct {
 		policyName string
 		cosigLine  string

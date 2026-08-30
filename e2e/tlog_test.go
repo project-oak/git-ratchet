@@ -15,16 +15,22 @@
 package e2e
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	fnote "github.com/transparency-dev/formats/note"
@@ -33,6 +39,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	inote "github.com/project-oak/git-ratchet/internal/note"
+	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
 // tlogFixture is a repository wired up to a running tlog-mode witness.
@@ -147,6 +154,24 @@ func (f *tlogFixture) checkpoint(t *testing.T) (string, error) {
 		"--key", f.keyPath,
 		"--policy", f.policyPath,
 	).CombinedOutput()
+	return string(out), err
+}
+
+// checkpointWithAPI runs checkpoint with the GitHub API pointed at a stub, as
+// GITHUB_API_URL does on an Enterprise instance.
+func (f *tlogFixture) checkpointWithAPI(t *testing.T, api string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(f.ratchetBin,
+		"checkpoint",
+		"--mode", "tlog",
+		"--repo", f.repoDir,
+		"--key", f.keyPath,
+		"--policy", f.policyPath,
+		"--github-token", "test-token",
+		"--witness-timeout", "30s",
+	)
+	cmd.Env = append(os.Environ(), "GITHUB_API_URL="+api)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
@@ -610,4 +635,130 @@ func mustFindCosignBinary(t *testing.T) string {
 	}
 	t.Skip("cosign binary not found; run with: bazel test //e2e:e2e_test")
 	return ""
+}
+
+// startIssueWitness runs a witness reachable as github-issue://owner/repo.
+//
+// It stands up enough of the GitHub REST API for the transport to work
+// against -- create an issue, read it, read its comments -- and behind that
+// the same add-checkpoint handler an HTTP witness serves. Both halves are real:
+// the transport speaks HTTP to the API stub, and the witness answers with
+// message/http, so the test exercises the JSON, the framing and the protocol
+// rather than a stand-in for any of them.
+//
+// It returns the API root to point the transport at.
+func startIssueWitness(t *testing.T, originKey, witnessKey *inote.Signer) string {
+	t.Helper()
+	witnessURL := startTlogWitness(t, originKey, witnessKey)
+
+	type issue struct {
+		state    string
+		comments []string
+	}
+	var (
+		mu     sync.Mutex
+		issues []*issue
+	)
+
+	// answer runs the request through the witness and posts its response, as
+	// the witness repository's workflow would.
+	answer := func(body string) {
+		m := regexp.MustCompile("(?s)```http\n(.*?)```").FindStringSubmatch(body)
+		if m == nil {
+			t.Errorf("issue body carries no http block:\n%s", body)
+			return
+		}
+		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(m[1])))
+		if err != nil {
+			t.Errorf("parsing request message: %v", err)
+			return
+		}
+		req.RequestURI = ""
+		req.URL, _ = url.Parse(witnessURL + iwitness.AddCheckpointPath)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("submitting to witness: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		msg, err := iwitness.MarshalMessage(resp)
+		if err != nil {
+			t.Errorf("serialising response: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		i := issues[len(issues)-1]
+		i.comments = append(i.comments, "```http\n"+msg+"```")
+		i.state = "closed"
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /repos/{owner}/{repo}/issues", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Title, Body string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		issues = append(issues, &issue{state: "open"})
+		n := len(issues)
+		mu.Unlock()
+
+		answer(in.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"number": n})
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{number}", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("number"))
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{"state": issues[n-1].state})
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{number}/comments", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("number"))
+		mu.Lock()
+		defer mu.Unlock()
+		out := []map[string]string{}
+		for _, c := range issues[n-1].comments {
+			out = append(out, map[string]string{"body": c})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// TestTlogIssueWitness checkpoints against a github-issue:// witness through
+// git-ratchet's own transport, with no decomposed workflow: the checkpoint
+// command opens the issue, waits for the reply and stores the result.
+func TestTlogIssueWitness(t *testing.T) {
+	f := newTlogFixture(t)
+	api := startIssueWitness(t, f.originKey, f.witnessKey)
+
+	f.policyPath = writeTlogPolicyFile(t, f.repoDir, f.originKey, f.witnessKey,
+		"github-issue://example-org/witness-repo")
+
+	makeCommit(t, f.repoDir, "first commit")
+	f.mustLogRefs(t, "refs/heads/main")
+	if out, err := f.checkpointWithAPI(t, api); err != nil {
+		t.Fatalf("checkpoint over the issue transport: %v\n%s", err, out)
+	}
+	if out, err := f.verify(t, "refs/heads/main"); err != nil {
+		t.Fatalf("verify after checkpointing over issues: %v\n%s", err, out)
+	}
+
+	// A second round has to ratchet: the witness holds size 1 and the request
+	// carries a consistency proof from there.
+	makeCommit(t, f.repoDir, "second commit")
+	f.mustLogRefs(t, "refs/heads/main")
+	if out, err := f.checkpointWithAPI(t, api); err != nil {
+		t.Fatalf("second checkpoint: %v\n%s", err, out)
+	}
+	if out, err := f.verify(t, "refs/heads/main"); err != nil {
+		t.Fatalf("verify after the second round: %v\n%s", err, out)
+	}
 }
