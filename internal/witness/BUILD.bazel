@@ -18,23 +18,20 @@ go_library(
     name = "witness",
     srcs = [
         "client.go",
-        "tlogproto.go",
+        "httpmsg.go",
+        "issuetransport.go",
         "verify.go",
     ],
     importpath = "github.com/project-oak/git-ratchet/internal/witness",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/gitutil",
-        "//internal/tlog",
+        "@com_github_google_go_github_v68//github",
     ],
 )
 
 go_test(
     name = "witness_test",
-    srcs = [
-        "tlogproto_test.go",
-        "verify_test.go",
-    ],
+    srcs = ["verify_test.go"],
     embed = [":witness"],
-    deps = ["//internal/tlog"],
 )

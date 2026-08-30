@@ -18,7 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +27,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/go-github/v68/github"
 )
 
 // IssueScheme is the URL scheme naming a witness reached over GitHub Issues.
@@ -155,13 +157,17 @@ func (t *IssueTransport) awaitReply(ctx context.Context, owner, repo string, num
 	if interval == 0 {
 		interval = 5 * time.Second
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	for {
 		comments, closed, err := t.readIssue(ctx, owner, repo, number)
 		if err != nil {
-			return "", err
+			pause, limited := rateLimitPause(err)
+			if !limited {
+				return "", err
+			}
+			if err := sleep(ctx, min(pause, interval*12)); err != nil {
+				return "", err
+			}
+			continue
 		}
 		for _, c := range comments {
 			if m := httpFence.FindStringSubmatch(c); m != nil {
@@ -175,19 +181,40 @@ func (t *IssueTransport) awaitReply(ctx context.Context, owner, repo string, num
 			return "", fmt.Errorf("witness closed the issue without a response: %s",
 				strings.TrimSpace(strings.Join(comments, "; ")))
 		}
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("waiting for a response: %w", ctx.Err())
-		case <-ticker.C:
+		if err := sleep(ctx, interval); err != nil {
+			return "", err
 		}
 	}
 }
 
-func (t *IssueTransport) api() *url.URL {
-	if t.API != nil {
-		return t.API
+// sleep waits, or returns why it could not.
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		d = time.Second
 	}
-	return DefaultAPIRoot()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for a response: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
+
+// apiRoot is the GitHub REST API root, which go-github requires to end in a
+// slash.
+func (t *IssueTransport) apiRoot() *url.URL {
+	u := t.API
+	if u == nil {
+		u = DefaultAPIRoot()
+	}
+	if !strings.HasSuffix(u.Path, "/") {
+		withSlash := *u
+		withSlash.Path += "/"
+		return &withSlash
+	}
+	return u
 }
 
 // DefaultAPIRoot is the GitHub REST API root to use when none is configured.
@@ -204,73 +231,65 @@ func DefaultAPIRoot() *url.URL {
 	return &url.URL{Scheme: "https", Host: "api.github.com"}
 }
 
-func (t *IssueTransport) do(ctx context.Context, method, path string, body any, out any) error {
-	var rdr io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rdr = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, t.api().JoinPath(path).String(), rdr)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	if t.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+t.Token)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	client := t.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail)))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+// github returns a client for the API root this transport is configured with.
+//
+// Its HTTP client must not be one this transport is registered on, or a
+// request to a witness would recurse into itself.
+func (t *IssueTransport) github() *github.Client {
+	c := github.NewClient(t.Client).WithAuthToken(t.Token)
+	c.BaseURL = t.apiRoot()
+	return c
 }
 
 func (t *IssueTransport) createIssue(ctx context.Context, owner, repo, title, body string) (int, error) {
-	var created struct {
-		Number int `json:"number"`
-	}
-	err := t.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/issues", owner, repo),
-		map[string]string{"title": title, "body": body}, &created)
+	issue, _, err := t.github().Issues.Create(ctx, owner, repo,
+		&github.IssueRequest{Title: &title, Body: &body})
 	if err != nil {
 		return 0, fmt.Errorf("creating issue on %s/%s: %w", owner, repo, err)
 	}
-	return created.Number, nil
+	return issue.GetNumber(), nil
 }
 
 func (t *IssueTransport) readIssue(ctx context.Context, owner, repo string, number int) (comments []string, closed bool, err error) {
-	var issue struct {
-		State string `json:"state"`
-	}
-	if err := t.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), nil, &issue); err != nil {
+	c := t.github()
+	issue, _, err := c.Issues.Get(ctx, owner, repo, number)
+	if err != nil {
 		return nil, false, err
 	}
-	var got []struct {
-		Body string `json:"body"`
+
+	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.Issues.ListComments(ctx, owner, repo, number, opts)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, comment := range page {
+			comments = append(comments, comment.GetBody())
+		}
+		if resp.NextPage == 0 {
+			return comments, issue.GetState() == "closed", nil
+		}
+		opts.Page = resp.NextPage
 	}
-	if err := t.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), nil, &got); err != nil {
-		return nil, false, err
+}
+
+// rateLimitPause reports how long to wait before retrying, and whether the
+// error was a rate limit at all.
+//
+// Polling for a reply is a request every few seconds for as long as the
+// witness's workflow takes, so hitting a limit is a matter of waiting rather
+// than a failure. Anything else is reported.
+func rateLimitPause(err error) (time.Duration, bool) {
+	var rl *github.RateLimitError
+	if errors.As(err, &rl) {
+		return time.Until(rl.Rate.Reset.Time), true
 	}
-	for _, c := range got {
-		comments = append(comments, c.Body)
+	var abuse *github.AbuseRateLimitError
+	if errors.As(err, &abuse) {
+		if abuse.RetryAfter != nil {
+			return *abuse.RetryAfter, true
+		}
+		return time.Minute, true
 	}
-	return comments, issue.State == "closed", nil
+	return 0, false
 }
