@@ -101,7 +101,7 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <n
 
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
-In `git-checkpoint` mode, witnesses are reached over HTTP only; a policy naming a `github-issue://` witness is rejected. GitHub Issue witnesses serve `tlog` mode.
+In `git-checkpoint` mode, witnesses are reached over HTTP only; a policy naming a `github-issue://` witness is rejected. In `tlog` mode both are reached directly, with `--github-token` supplying the token a GitHub Issue witness needs.
 
 ### `git-ratchet checkpoint-request`
 

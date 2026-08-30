@@ -51,22 +51,49 @@ func main() {
 	os.Exit(int(subcommands.Execute(ctx)))
 }
 
-// witnessClient returns the HTTP client witnesses are reached through. The
-// transports it carries determine which witness endpoints can be served; the
-// deadline is the caller's, via the request context.
+// witnessClient returns a client that reaches witnesses over HTTP, which is
+// every witness git-checkpoint mode has. The deadline is the caller's, via the
+// request context.
 func witnessClient() *http.Client {
 	return &http.Client{}
 }
 
+// tlogWitnessClient also reaches github-issue witnesses, which only tlog mode
+// has, by registering a transport for their scheme. The code that submits a
+// checkpoint therefore does not know which carrier it got.
+func tlogWitnessClient(githubToken string) *http.Client {
+	t := &http.Transport{}
+	t.RegisterProtocol(witness.IssueScheme, &witness.IssueTransport{Token: githubToken})
+	return &http.Client{Transport: t}
+}
+
+// requireGitHubToken reports whether the policy names a witness this client
+// cannot reach without a token.
+//
+// Skipping such a witness would quietly lower the quorum, so an unreachable
+// one is a usage error rather than a warning.
+func requireGitHubToken(endpoints []string, token string) error {
+	if token != "" {
+		return nil
+	}
+	for _, e := range endpoints {
+		if strings.HasPrefix(e, witness.IssueScheme+"://") {
+			return fmt.Errorf("witness %s needs --github-token: a token that can open an issue on the witness repository", e)
+		}
+	}
+	return nil
+}
+
 type checkpointCmd struct {
-	ref        string
-	origin     string
-	policyPath string
-	keyPath    string
-	kmsKey     string
-	repoDir    string
-	mode       string
-	timeout    time.Duration
+	ref         string
+	origin      string
+	policyPath  string
+	keyPath     string
+	kmsKey      string
+	repoDir     string
+	mode        string
+	timeout     time.Duration
+	githubToken string
 }
 
 func (*checkpointCmd) Name() string     { return "checkpoint" }
@@ -108,6 +135,7 @@ func (c *checkpointCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
 	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
 	f.DurationVar(&c.timeout, "witness-timeout", 30*time.Second, "How long to wait for each witness to cosign")
+	f.StringVar(&c.githubToken, "github-token", "", "GitHub token for reaching github-issue:// witnesses")
 }
 
 func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
@@ -154,20 +182,41 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		origin = signer.Name
 	}
 
-	// The two modes read different policy grammars; see internal/policy/tlog.go.
+	// The two modes read different policy grammars and reach witnesses
+	// differently; see internal/policy/tlog.go.
 	if c.mode == modeTlog {
-		tpol, err := policy.FromPath(c.policyPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		if err := checkpointTlog(c.repoDir, origin, signer, tpol, witnessClient(), c.timeout); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		return subcommands.ExitSuccess
+		return c.executeTlog(origin, signer)
 	}
+	return c.executeGitCheckpoint(origin, signer)
+}
 
+// executeTlog checkpoints the repository's transparency log.
+func (c *checkpointCmd) executeTlog(origin string, signer *note.Signer) subcommands.ExitStatus {
+	pol, err := policy.FromPath(c.policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	endpoints := make([]string, 0, len(pol.Witnesses))
+	for _, w := range pol.Witnesses {
+		if w.URL != nil {
+			endpoints = append(endpoints, w.URL.String())
+		}
+	}
+	if err := requireGitHubToken(endpoints, c.githubToken); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+	if err := checkpointTlog(c.repoDir, origin, signer, pol, tlogWitnessClient(c.githubToken), c.timeout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	return subcommands.ExitSuccess
+}
+
+// executeGitCheckpoint signs one ref's checkpoint, collects cosignatures from
+// the policy's witnesses, and stores the result.
+func (c *checkpointCmd) executeGitCheckpoint(origin string, signer *note.Signer) subcommands.ExitStatus {
 	// Load the policy for witnesses and quorum (the log line is not
 	// used on the checkpointer side — the origin knows its own identity).
 	pol, err := policy.Load(c.policyPath)

@@ -20,6 +20,11 @@ require (
 )
 
 require (
+	github.com/google/go-github/v68 v68.0.0
+	github.com/google/go-querystring v1.1.0 // indirect
+)
+
+require (
 	github.com/transparency-dev/witness v0.0.0-20260819093548-6247fc953c2a
 	k8s.io/klog/v2 v2.140.0 // indirect
 )

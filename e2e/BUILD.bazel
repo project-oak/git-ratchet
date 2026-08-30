@@ -27,6 +27,7 @@ go_test(
     ],
     deps = [
         "//internal/note",
+        "//internal/witness",
         "@com_github_transparency_dev_formats//note",
         "@com_github_transparency_dev_witness//persistence/inmemory",
         "@com_github_transparency_dev_witness//witness",
