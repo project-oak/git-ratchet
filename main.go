@@ -51,13 +51,17 @@ func main() {
 	os.Exit(int(subcommands.Execute(ctx)))
 }
 
-// witnessClient returns the HTTP client witnesses are reached through. The
-// transports it carries determine which witness endpoints can be served; the
-// deadline is the caller's, via the request context.
-//
-// A github-issue witness is served by registering a transport for its scheme,
-// so the code that submits a checkpoint does not know which carrier it got.
-func witnessClient(githubToken string) *http.Client {
+// witnessClient returns a client that reaches witnesses over HTTP, which is
+// every witness git-checkpoint mode has. The deadline is the caller's, via the
+// request context.
+func witnessClient() *http.Client {
+	return &http.Client{}
+}
+
+// tlogWitnessClient also reaches github-issue witnesses, which only tlog mode
+// has, by registering a transport for their scheme. The code that submits a
+// checkpoint therefore does not know which carrier it got.
+func tlogWitnessClient(githubToken string) *http.Client {
 	t := &http.Transport{}
 	t.RegisterProtocol(witness.IssueScheme, &witness.IssueTransport{Token: githubToken})
 	return &http.Client{Transport: t}
@@ -178,30 +182,41 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		origin = signer.Name
 	}
 
-	// The two modes read different policy grammars; see internal/policy/tlog.go.
+	// The two modes read different policy grammars and reach witnesses
+	// differently; see internal/policy/tlog.go.
 	if c.mode == modeTlog {
-		tpol, err := policy.FromPath(c.policyPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		endpoints := make([]string, 0, len(tpol.Witnesses))
-		for _, w := range tpol.Witnesses {
-			if w.URL != nil {
-				endpoints = append(endpoints, w.URL.String())
-			}
-		}
-		if err := requireGitHubToken(endpoints, c.githubToken); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitUsageError
-		}
-		if err := checkpointTlog(c.repoDir, origin, signer, tpol, witnessClient(c.githubToken), c.timeout); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return subcommands.ExitFailure
-		}
-		return subcommands.ExitSuccess
+		return c.executeTlog(origin, signer)
 	}
+	return c.executeGitCheckpoint(origin, signer)
+}
 
+// executeTlog checkpoints the repository's transparency log.
+func (c *checkpointCmd) executeTlog(origin string, signer *note.Signer) subcommands.ExitStatus {
+	pol, err := policy.FromPath(c.policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	endpoints := make([]string, 0, len(pol.Witnesses))
+	for _, w := range pol.Witnesses {
+		if w.URL != nil {
+			endpoints = append(endpoints, w.URL.String())
+		}
+	}
+	if err := requireGitHubToken(endpoints, c.githubToken); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitUsageError
+	}
+	if err := checkpointTlog(c.repoDir, origin, signer, pol, tlogWitnessClient(c.githubToken), c.timeout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return subcommands.ExitFailure
+	}
+	return subcommands.ExitSuccess
+}
+
+// executeGitCheckpoint signs one ref's checkpoint, collects cosignatures from
+// the policy's witnesses, and stores the result.
+func (c *checkpointCmd) executeGitCheckpoint(origin string, signer *note.Signer) subcommands.ExitStatus {
 	// Load the policy for witnesses and quorum (the log line is not
 	// used on the checkpointer side — the origin knows its own identity).
 	pol, err := policy.Load(c.policyPath)
@@ -220,7 +235,7 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 	// Phase 2: Collect cosignatures from witnesses in parallel.
 	// Each witness gets its own deadline so a hung or slow witness does not
 	// block the command indefinitely.
-	client := witnessClient("")
+	client := witnessClient()
 	type cosigResult struct {
 		policyName string
 		cosigLine  string
