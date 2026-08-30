@@ -266,6 +266,22 @@ On the origin side, add the witness to your policy file:
 witness mywitness github-issue://my-org/git-witness <witness-vkey>
 ```
 
+A workflow reaches it through the [`checkpoint`](../actions/checkpoint) action
+in `tlog` mode, with a token that can open issues on the witness repository:
+
+```yaml
+      - uses: project-oak/git-ratchet/actions/checkpoint@main
+        with:
+          mode: tlog
+          ref: ${{ github.ref }}
+          origin-key: ${{ secrets.ORIGIN_KEY }}
+          policy: policy.txt
+          github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}
+```
+
+`github.token` is scoped to the origin repository, so it cannot open an issue
+on the witness; this needs a token that can.
+
 ## Advantages over HTTP witnesses
 
 - **No server to deploy or maintain.** The witness runs entirely as a GitHub
