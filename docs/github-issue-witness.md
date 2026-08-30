@@ -31,44 +31,91 @@ witness mywitness github-issue://example-org/my-witness example-witness+abcd1234
 
 ## Protocol
 
-### Origin side (`actions/checkpoint`)
+The exchange is the [tlog-witness][] `add-checkpoint` exchange, unchanged. Only
+the wire differs: an issue carries the request and a comment carries the
+response, in place of a POST and its reply.
 
-The origin's checkpoint action performs the following steps:
+[tlog-witness]: https://c2sp.org/tlog-witness
 
-1. Creates a GitHub Issue on the witness repo with the `add-checkpoint` request
-   body in a fenced code block:
+### Framing
 
-       ```add-checkpoint
-       <request body>
-       ```
+Each message is one HTTP message, serialised as `message/http`
+([RFC 9112][]), in a fenced block tagged `http`:
 
-   The issue title is `checkpoint: <origin> <ref>`.
+    ```http
+    POST /add-checkpoint HTTP/1.1
+    Host: witness.invalid
+    Content-Length: 186
 
-2. Polls the issue every 5 seconds until it is closed (configurable timeout,
-   default 300s).
+    old 0
 
-3. When closed, reads the issue comments looking for one starting with `— `
-   (the cosignature line prefix).
+    example.com/repo
+    1
+    q1s6ZW51k4Bgvzp0KgnkY5bhwXCbLpXV4uOxNZ0DvGw=
 
-4. Saves the cosignature for assembly.
+    — example.com/repo AAAA...
+    ```
 
-The origin requires a GitHub token (`github-token` input) with permission to
-create issues on the witness repo.
+Both sides produce and consume these with the standard library, so nothing
+about the protocol is reimplemented for this transport.
+
+Three rules the carrier imposes:
+
+- **Line endings are LF, not the CRLF [RFC 9112][] specifies.** GitHub
+  normalises CRLF to LF in issue and comment text, so a message sent with CRLF
+  does not come back as it was sent. Sending LF makes the two identical, and
+  Go's parsers accept it. Nothing may depend on the serialisation being stable
+  in any case: it is a wire, not something signed.
+- **`Content-Length` is required**, and chunked encoding MUST NOT be used.
+  Without it a body runs to the end of the message, and anything the carrier
+  appends — a trailing newline from a comment box — is read as part of it.
+- **`Host` is `witness.invalid`.** RFC 9112 requires a Host on every HTTP/1.1
+  request, but one request may be carried to several witnesses and the carrier
+  addresses them out of band, so there is no host to name. A reserved name
+  ([RFC 2606][]) says that rather than implying an address.
+
+The owner and repository in a `github-issue://` URL say which issue thread to
+post to, not which resource is being addressed, so they do not appear in the
+message. A witness routes `/add-checkpoint` exactly as it would over HTTP.
+
+[RFC 9112]: https://www.rfc-editor.org/rfc/rfc9112.html
+[RFC 2606]: https://www.rfc-editor.org/rfc/rfc2606.html
+
+### One issue, one exchange
+
+An issue carries exactly one request and receives exactly one response. There
+is no reuse: a second request — a resubmission after a `409`, say — opens a new
+issue.
+
+Carrying two exchanges on one issue would be HTTP/1.1 pipelining, where a
+response is paired to a request by ordering. The witness is a workflow run per
+message, and two runs can finish out of order, so the pairing would not hold.
 
 ### Witness side (`actions/cosign`)
 
 When an issue arrives, the cosign action:
 
-1. Parses the `add-checkpoint` block from the issue body.
-2. Checks that the origin is registered (has a `checkpoints/<origin>/vkeys.txt`).
-3. Runs the `cosign` binary with `--stored-checkpoint` pointing to the last
-   cosigned checkpoint file, if one exists.
-4. Commits the updated checkpoint to the repo.
-5. Posts the cosignature as a comment on the issue.
-6. Closes the issue as completed.
+1. Reads the `http` block from the issue body.
+2. Takes the origin from the first line of the checkpoint, and checks it is
+   registered (has an `origins/<origin>` file of trusted keys).
+3. Runs the `cosign` binary, which parses the request, hands it to
+   [transparency-dev/witness][witness-impl]'s own `add-checkpoint` handler, and
+   serialises what that handler returns. A `github-issue` witness therefore
+   answers exactly as an HTTP one would, down to the status code and the
+   `Content-Type` on a size conflict.
+4. Commits the updated state at `checkpoints/<origin>`. There is one log per
+   origin, so there is one state file per origin. A refused request writes no
+   state, and a resubmission at the size already held writes nothing new;
+   neither is an error, and neither stops the response being posted.
+5. Posts the response as a comment, whatever its status: a refusal is an
+   answer, and the origin needs to read it.
+6. Closes the issue.
 
-On failure, it posts an error comment with a link to the workflow run and closes
-the issue as not planned.
+On failure — the origin is not registered, or the request will not parse — it
+posts an error comment with a link to the workflow run and closes the issue as
+not planned.
+
+[witness-impl]: https://github.com/transparency-dev/witness
 
 ## Setting up a new witness repo
 
@@ -98,24 +145,27 @@ Add the full contents of the key file as a GitHub Actions secret (e.g.
 
 ### 4. Create the directory structure
 
-For each origin you want to witness, create:
+For each origin you want to witness, create a file listing its trusted verifier
+keys, one per line; lines starting with `#` are comments:
 
 ```
-checkpoints/<origin>/vkeys.txt
+origins/<origin>
 ```
 
-where `<origin>` is the origin identifier (e.g. `github.com/example/repo`).
-The `vkeys.txt` file lists trusted origin verifier keys, one per line. Lines
-starting with `#` are comments.
+where `<origin>` is the origin identifier, so
+`origins/github.com/example/repo`. The path components come from the origin's
+own name, not from any structure the witness adds.
 
-As the witness cosigns checkpoints, checkpoint files are committed alongside
-the keys:
+As the witness cosigns, it keeps its state in a matching file:
 
 ```
-checkpoints/<origin>/<ref>
+checkpoints/<origin>
 ```
 
-For example: `checkpoints/github.com/example/repo/refs/heads/main`.
+One log per origin means one state file per origin: the ratchet is over the
+log's tree size, not over any one ref. Registration and state are separate
+trees so that each is a single file, and so that `git log checkpoints/<origin>`
+is that origin's witnessing history and nothing else.
 
 ### 5. Create a workflow
 
@@ -142,10 +192,10 @@ jobs:
           witness-key: ${{ secrets.WITNESS_KEY }}
 ```
 
-The `if` guard prevents the workflow from triggering on non-checkpoint issues.
-The `concurrency` group serialises cosign jobs per origin and ref (derived from
-the issue title `checkpoint: <origin> <ref>`), preventing race conditions when
-multiple checkpoints arrive in quick succession.
+The issue title is `checkpoint: <origin>`. The `if` guard prevents the workflow
+from triggering on non-checkpoint issues, and the `concurrency` group keys on
+the title, which serialises cosign jobs per origin and stops two runs racing on
+the same state file when checkpoints arrive in quick succession.
 
 The workflow needs `contents: write` to commit updated checkpoint files and
 `issues: write` to post comments and close issues.

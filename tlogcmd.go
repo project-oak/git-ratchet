@@ -15,9 +15,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -445,7 +448,68 @@ func checkpointRequestTlog(repoDir, origin string, signer *note.Signer) (request
 	if err != nil {
 		return "", "", fmt.Errorf("generating consistency proof from size %d: %w", oldSize, err)
 	}
-	return iwitness.FormatTlogRequest(oldSize, proof, signedNote), signedNote, nil
+
+	body := addCheckpointBody(oldSize, proof, signedNote)
+	req, err := http.NewRequest(http.MethodPost, iwitness.AddCheckpointPath, strings.NewReader(body))
+	if err != nil {
+		return "", "", fmt.Errorf("building add-checkpoint request: %w", err)
+	}
+	req.Host = iwitness.MessageHost
+	req.ContentLength = int64(len(body))
+	// Left unset, Write inserts Go's default; the carrier is not a user agent.
+	req.Header.Set("User-Agent", "")
+	msg, err := iwitness.MarshalMessage(req)
+	if err != nil {
+		return "", "", err
+	}
+	return msg, signedNote, nil
+}
+
+// addCheckpointBody renders the tlog-witness add-checkpoint request body: an
+// old size line, one line per consistency proof hash, an empty line, then the
+// signed checkpoint.
+func addCheckpointBody(oldSize uint64, proof []tlog.Hash, signedNote string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "old %d\n", oldSize)
+	for _, h := range proof {
+		b.WriteString(base64.StdEncoding.EncodeToString(h[:]))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(signedNote)
+	return b.String()
+}
+
+// cosignatureFromResponse extracts the cosignature lines from a witness's
+// add-checkpoint response, given as message/http.
+//
+// A witness that refused says so in its status, and the reason is worth
+// reporting rather than assembling a checkpoint that cannot satisfy the
+// quorum. A size conflict names the size the witness holds, which is what a
+// fresh checkpoint-request would need to build a proof from.
+func cosignatureFromResponse(message string) (string, error) {
+	resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(message)), nil)
+	if err != nil {
+		return "", fmt.Errorf("parsing response message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading response body: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return strings.TrimSpace(string(body)), nil
+	case http.StatusConflict:
+		if resp.Header.Get("Content-Type") == "text/x.tlog.size" {
+			return "", fmt.Errorf("witness holds tree size %s; rebuild the request with checkpoint-request",
+				strings.TrimSpace(string(body)))
+		}
+		return "", fmt.Errorf("witness holds a different tree at this size")
+	default:
+		return "", fmt.Errorf("witness returned %s", resp.Status)
+	}
 }
 
 // checkpointStoreTlog stores a checkpoint assembled elsewhere, after checking

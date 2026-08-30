@@ -15,8 +15,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 
 	fnote "github.com/transparency-dev/formats/note"
@@ -27,22 +30,23 @@ import (
 	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
-// cosignTlog witnesses a tlog-checkpoint submitted as a file rather than as a
-// POST, which is what the GitHub Issue transport carries.
+// cosignTlog witnesses one add-checkpoint request and returns the response.
 //
-// The witness itself is transparency-dev/witness. Its Update applies the whole
-// of tlog-witness — signature, origin, size ordering, root hash at equal sizes,
-// consistency proof — and returns the cosignature lines, so what is here is the
-// transport and the storage and nothing about the protocol.
-func cosignTlog(ctx context.Context, requestBody string, witnessKey *inote.Signer, origins map[string]cosignOriginKey, statePath string) (string, error) {
+// Both are message/http: the request arrives as an issue body and the response
+// is posted as a comment. The witness is transparency-dev/witness's own HTTP
+// handler, so a github-issue witness answers exactly as an HTTP one would --
+// same status codes, same Content-Type on a size conflict, same everything.
+// Only the wire differs.
+func cosignTlog(ctx context.Context, requestMessage string, witnessKey *inote.Signer, origins map[string]cosignOriginKey, statePath string) (string, error) {
 	if statePath == "" {
 		return "", fmt.Errorf("--stored-checkpoint is required: a witness with no state cannot ratchet")
 	}
 
-	req, err := iwitness.ParseTlogRequest(requestBody)
+	req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(requestMessage)))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("parsing request message: %w", err)
 	}
+	req = req.WithContext(ctx)
 
 	signer, err := inote.TlogCosigner(witnessKey)
 	if err != nil {
@@ -68,19 +72,13 @@ func cosignTlog(ctx context.Context, requestBody string, witnessKey *inote.Signe
 		return "", fmt.Errorf("creating witness: %w", err)
 	}
 
-	proof := make([][]byte, 0, len(req.Proof))
-	for _, h := range req.Proof {
-		proof = append(proof, h[:])
-	}
+	rec := httptest.NewRecorder()
+	twitness.NewAddCheckpointHandler(w.Update).ServeHTTP(rec, req)
 
-	sigs, size, err := w.Update(ctx, req.OldSize, []byte(req.Note), proof)
-	if err != nil {
-		// A stale submission is recoverable: the size the witness holds is
-		// what the client needs to regenerate its proof from.
-		if size != req.OldSize {
-			return "", fmt.Errorf("%w (witness holds tree size %d)", err, size)
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(sigs)), nil
+	// Without a Content-Length the body runs to the end of the message, so
+	// anything the carrier appends -- a trailing newline from a comment box --
+	// would be read as part of it.
+	resp := rec.Result()
+	resp.ContentLength = int64(rec.Body.Len())
+	return iwitness.MarshalMessage(resp)
 }
