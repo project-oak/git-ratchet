@@ -15,7 +15,6 @@
 package e2e
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -23,7 +22,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +37,6 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	inote "github.com/project-oak/git-ratchet/internal/note"
-	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
 // tlogFixture is a repository wired up to a running tlog-mode witness.
@@ -543,81 +540,6 @@ func TestTlogUnwitnessedEntriesAreIgnored(t *testing.T) {
 	}
 }
 
-// TestTlogDecomposedWorkflow exercises the transport the GitHub Issue witness
-// uses: the add-checkpoint body travels as a file rather than as a POST.
-//
-// checkpoint-request writes the request and the note without contacting anyone
-// and without touching the log; the witness runs from those files; and
-// checkpoint-store checks the cosignatures cover the tree the log holds, and
-// saves. The result must verify like any other checkpoint, because it is one —
-// only the delivery differs.
-func TestTlogDecomposedWorkflow(t *testing.T) {
-	f := newTlogFixture(t)
-	dir := t.TempDir()
-
-	witnessKeyPath := filepath.Join(dir, "witness.key")
-	mustWriteKey(t, witnessKeyPath, f.witnessKey)
-	originsPath := filepath.Join(dir, "origins.txt")
-	if err := os.WriteFile(originsPath, []byte(f.originKey.VKey()+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	statePath := filepath.Join(dir, "witness-state.txt")
-
-	round := func(t *testing.T, n int) {
-		t.Helper()
-		requestPath := filepath.Join(dir, fmt.Sprintf("request-%d", n))
-		notePath := filepath.Join(dir, fmt.Sprintf("note-%d", n))
-		cosigPath := filepath.Join(dir, fmt.Sprintf("cosig-%d", n))
-
-		f.mustLogRefs(t, "refs/heads/main")
-		logHead := strings.TrimSpace(runOutput(t, f.repoDir, "git", "rev-parse", "refs/ratchet/log"))
-
-		if out, err := exec.Command(f.ratchetBin, "checkpoint-request",
-			"--mode", "tlog", "--repo", f.repoDir,
-			"--key", f.keyPath,
-			"--output-request", requestPath, "--output-note", notePath,
-		).CombinedOutput(); err != nil {
-			t.Fatalf("checkpoint-request: %v\n%s", err, out)
-		}
-
-		// checkpoint-request only reads: the checkpoint the log carries does
-		// not change until the cosignatures are in hand.
-		if now := strings.TrimSpace(runOutput(t, f.repoDir, "git", "rev-parse", "refs/ratchet/log")); now != logHead {
-			t.Fatalf("checkpoint-request moved the log ref: %s -> %s", logHead, now)
-		}
-
-		cosig, err := exec.Command(f.cosignBin,
-			"--request", requestPath, "--origin-vkeys", originsPath,
-			"--key", witnessKeyPath, "--stored-checkpoint", statePath,
-		).Output()
-		if err != nil {
-			t.Fatalf("cosign round %d: %v", n, err)
-		}
-		if err := os.WriteFile(cosigPath, cosig, 0644); err != nil {
-			t.Fatal(err)
-		}
-
-		if out, err := exec.Command(f.ratchetBin, "checkpoint-store",
-			"--mode", "tlog", "--repo", f.repoDir,
-			"--policy", f.policyPath, "--note", notePath, "--cosig", cosigPath,
-		).CombinedOutput(); err != nil {
-			t.Fatalf("checkpoint-store round %d: %v\n%s", n, err, out)
-		}
-
-		if out, err := f.verify(t, "refs/heads/main"); err != nil {
-			t.Fatalf("verify after round %d: %v\n%s", n, err, out)
-		}
-	}
-
-	makeCommit(t, f.repoDir, "first commit")
-	round(t, 1)
-
-	// A second round proves the witness ratcheted: it has to accept a
-	// consistency proof from the size it stored in round one.
-	makeCommit(t, f.repoDir, "second commit")
-	round(t, 2)
-}
-
 // mustFindCosignBinary locates the compiled cosign binary from Bazel runfiles.
 func mustFindCosignBinary(t *testing.T) string {
 	t.Helper()
@@ -641,15 +563,23 @@ func mustFindCosignBinary(t *testing.T) string {
 //
 // It stands up enough of the GitHub REST API for the transport to work
 // against -- create an issue, read it, read its comments -- and behind that
-// the same add-checkpoint handler an HTTP witness serves. Both halves are real:
-// the transport speaks HTTP to the API stub, and the witness answers with
-// message/http, so the test exercises the JSON, the framing and the protocol
-// rather than a stand-in for any of them.
+// runs the real cosign binary on the issue body, as the witness repository's
+// workflow does. Every part is the shipped one: the transport speaks HTTP to
+// the API stub, cosign parses the message and answers with the standard
+// add-checkpoint handler, and its state ratchets in a file between rounds.
 //
 // It returns the API root to point the transport at.
 func startIssueWitness(t *testing.T, originKey, witnessKey *inote.Signer) string {
 	t.Helper()
-	witnessURL := startTlogWitness(t, originKey, witnessKey)
+	dir := t.TempDir()
+	witnessKeyPath := filepath.Join(dir, "witness.key")
+	mustWriteKey(t, witnessKeyPath, witnessKey)
+	originsPath := filepath.Join(dir, "origins.txt")
+	if err := os.WriteFile(originsPath, []byte(originKey.VKey()+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "checkpoint")
+	cosignBin := mustFindCosignBinary(t)
 
 	type issue struct {
 		state    string
@@ -660,37 +590,34 @@ func startIssueWitness(t *testing.T, originKey, witnessKey *inote.Signer) string
 		issues []*issue
 	)
 
-	// answer runs the request through the witness and posts its response, as
-	// the witness repository's workflow would.
-	answer := func(body string) {
+	// answer runs the request through the cosign binary and posts its
+	// response, which is what the witness repository's workflow does.
+	answer := func(number int, body string) {
 		m := regexp.MustCompile("(?s)```http\n(.*?)```").FindStringSubmatch(body)
 		if m == nil {
 			t.Errorf("issue body carries no http block:\n%s", body)
 			return
 		}
-		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(m[1])))
-		if err != nil {
-			t.Errorf("parsing request message: %v", err)
+		reqPath := filepath.Join(dir, fmt.Sprintf("request-%d", number))
+		if err := os.WriteFile(reqPath, []byte(m[1]), 0644); err != nil {
+			t.Error(err)
 			return
 		}
-		req.RequestURI = ""
-		req.URL, _ = url.Parse(witnessURL + iwitness.AddCheckpointPath)
-		resp, err := http.DefaultClient.Do(req)
+		out, err := exec.Command(cosignBin,
+			"--request", reqPath,
+			"--origin-vkeys", originsPath,
+			"--key", witnessKeyPath,
+			"--stored-checkpoint", statePath,
+		).Output()
 		if err != nil {
-			t.Errorf("submitting to witness: %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		msg, err := iwitness.MarshalMessage(resp)
-		if err != nil {
-			t.Errorf("serialising response: %v", err)
+			t.Errorf("cosign: %v", err)
 			return
 		}
 
 		mu.Lock()
 		defer mu.Unlock()
-		i := issues[len(issues)-1]
-		i.comments = append(i.comments, "```http\n"+msg+"```")
+		i := issues[number-1]
+		i.comments = append(i.comments, "```http\n"+string(out)+"```")
 		i.state = "closed"
 	}
 
@@ -706,7 +633,7 @@ func startIssueWitness(t *testing.T, originKey, witnessKey *inote.Signer) string
 		n := len(issues)
 		mu.Unlock()
 
-		answer(in.Body)
+		answer(n, in.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]int{"number": n})
 	})

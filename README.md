@@ -73,9 +73,8 @@ git-ratchet verify     --mode tlog --ref refs/heads/main --policy policy.txt
 
 ## Witnesses
 
-git-ratchet supports two types of witnesses:
+git-ratchet supports two types of witnesses, both reached by `checkpoint` itself:
 
-- **Non-HTTP witnesses**: `checkpoint-request` and `checkpoint-store` decompose the flow so cosignatures can be collected out of band (`tlog` mode only).
 - **HTTP witnesses**: A standalone server (deployed e.g. on Cloud Run) that responds to the [witness HTTP protocol](docs/witness-protocol.md). See [deploy/witness/README.md](deploy/witness/README.md) for deployment.
 - **GitHub Issue witnesses**: A GitHub repository that cosigns checkpoints via GitHub Actions, using GitHub Issues as the transport (`tlog` mode only). See [docs/github-issue-witness.md](docs/github-issue-witness.md) for setup.
 
@@ -102,33 +101,6 @@ git-ratchet checkpoint --ref <refpath> --key <path> --policy <path> [--origin <n
 Signs a checkpoint for the ref, submits it to the witnesses in the policy file, collects cosignatures, and stores the cosigned checkpoint as a Git ref (`refs/checkpoints/heads/<branch>` or `refs/checkpoints/tags/<tag>`).
 
 In `git-checkpoint` mode, witnesses are reached over HTTP only; a policy naming a `github-issue://` witness is rejected. In `tlog` mode both are reached directly, with `--github-token` supplying the token a GitHub Issue witness needs.
-
-### `git-ratchet checkpoint-request`
-
-```
-git-ratchet checkpoint-request \
-    --ref <refpath> \
-    --key <path> \
-    --output-request <path> \
-    --output-note <path> \
-    [--origin <name>] [flags]
-```
-
-Produces the add-checkpoint request body (ancestry proof + signed note) without contacting any witnesses. The output can later be submitted to witnesses out-of-band. The origin identity is derived from the key file; use `--origin` to override (required when using `--kms-key`).
-
-The decomposed workflow (`checkpoint-request` / `checkpoint-store`) is `tlog`-only. It exists so a witness can be reached out of band, which is how a `github-issue://` witness is served.
-
-### `git-ratchet checkpoint-store`
-
-```
-git-ratchet checkpoint-store \
-    --ref <refpath> \
-    --policy <path> \
-    --note <path> \
-    [--cosig <path>]... [flags]
-```
-
-Assembles a cosigned checkpoint from the signed note (produced by `checkpoint-request`) and one or more cosignature files (collected out-of-band), verifies the result against the policy, and stores it. The `--cosig` flag can be repeated for each witness cosignature.
 
 ### `git-ratchet verify`
 
@@ -159,36 +131,10 @@ cosign \
     --request <path> \
     --origin-vkeys <path> \
     --key <path> \
-    [--stored-checkpoint <path>]
+    --stored-checkpoint <path>
 ```
 
-A standalone witness binary (built via `bazel build //witness/cosign`) that reads an add-checkpoint request from a file, verifies the origin signature and ancestry proof, and writes the cosignature line to stdout. This is the offline counterpart to the HTTP witness server — it performs the same verification but reads from files instead of receiving HTTP requests.
-
-### Decomposed workflow
-
-The `checkpoint` command handles the full lifecycle for HTTP witnesses. For non-HTTP witnesses (e.g. [GitHub Issue witnesses](docs/github-issue-witness.md)), use the decomposed workflow, which is `tlog`-only:
-
-```bash
-# 1. Produce the request and signed note
-git-ratchet checkpoint-request \
-    --ref refs/heads/main \
-    --key origin-key.pem \
-    --output-request request.txt \
-    --output-note note.txt
-
-# 2. Submit to each witness (e.g. via the standalone cosign binary)
-cosign \
-    --request request.txt \
-    --origin-vkeys origins.txt \
-    --key witness-key.pem > cosig1.txt
-
-# 3. Assemble and store the cosigned checkpoint
-git-ratchet checkpoint-store \
-    --ref refs/heads/main \
-    --policy policy.txt \
-    --note note.txt \
-    --cosig cosig1.txt
-```
+A standalone witness binary (built via `bazel build //witness/cosign`) that reads an `add-checkpoint` request from a file and writes the witness's response to stdout, both as `message/http`. It is what a [GitHub Issue witness](docs/github-issue-witness.md) runs: the same protocol an HTTP witness serves, carried by an issue and a comment rather than a POST.
 
 See `git-ratchet <command> --help` for details.
 

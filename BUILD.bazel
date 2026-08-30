@@ -48,7 +48,6 @@ go_binary(
 go_test(
     name = "git-ratchet_test",
     srcs = [
-        "checkpoint_request_test.go",
         "checkpoint_test.go",
         "tlogcmd_test.go",
     ],

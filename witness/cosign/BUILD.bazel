@@ -24,7 +24,6 @@ go_library(
     importpath = "github.com/project-oak/git-ratchet/witness/cosign",
     visibility = ["//visibility:private"],
     deps = [
-        "//internal/gitutil",
         "//internal/note",
         "//internal/witness",
         "@com_github_transparency_dev_formats//note",

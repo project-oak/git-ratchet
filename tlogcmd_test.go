@@ -16,7 +16,6 @@ package main
 
 import (
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -124,68 +123,5 @@ func TestCheckRefChainMissingObject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "logged history was discarded") {
 		t.Errorf("error should explain what a missing object means, got: %v", err)
-	}
-}
-
-// TestCosignatureFromResponse covers reading a witness's add-checkpoint
-// response. A refusal has to be told from a cosignature: appending the body of
-// a 409 to the note would leave the checkpoint short of quorum, with nothing
-// saying why.
-func TestCosignatureFromResponse(t *testing.T) {
-	msg := func(status, headers, body string) string {
-		return "HTTP/1.1 " + status + "\nContent-Length: " +
-			strconv.Itoa(len(body)) + "\n" + headers + "\n" + body
-	}
-
-	for _, tc := range []struct {
-		name    string
-		message string
-		want    string
-		wantErr string
-	}{
-		{
-			name:    "cosignature",
-			message: msg("200 OK", "", "— w1 AAAA\n"),
-			want:    "— w1 AAAA",
-		},
-		{
-			name:    "size conflict names the size the witness holds",
-			message: msg("409 Conflict", "Content-Type: text/x.tlog.size\n", "7\n"),
-			wantErr: "witness holds tree size 7",
-		},
-		{
-			name:    "conflict without a size is a different tree",
-			message: msg("409 Conflict", "", ""),
-			wantErr: "different tree",
-		},
-		{
-			name:    "refusal is reported, not assembled",
-			message: msg("403 Forbidden", "", ""),
-			wantErr: "403",
-		},
-		{
-			name:    "not a message",
-			message: "— w1 AAAA\n",
-			wantErr: "parsing response message",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := cosignatureFromResponse(tc.message)
-			if tc.wantErr != "" {
-				if err == nil {
-					t.Fatalf("expected an error containing %q, got %q", tc.wantErr, got)
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
