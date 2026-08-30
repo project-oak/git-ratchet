@@ -14,9 +14,9 @@
 
 name: 'git-ratchet checkpoint'
 description: >
-  Origin-side checkpoint lifecycle: sign a checkpoint, collect cosignatures
-  from the policy's witnesses, evaluate quorum, store the result, and push
-  the checkpoint ref.
+  Origin-side checkpoint lifecycle: record the ref, collect cosignatures from
+  the policy's witnesses, evaluate quorum, store the result, and push what it
+  was stored in.
 
 inputs:
   ref:
@@ -28,8 +28,14 @@ inputs:
   policy:
     description: 'Path to the witness policy file (relative to repo root)'
     required: true
+  mode:
+    description: 'Checkpoint format: git-checkpoint or tlog'
+    required: false
+    default: 'git-checkpoint'
   github-token:
-    description: 'GitHub token with permission to create issues on witness repos'
+    description: >
+      GitHub token that can open issues on witness repositories, for
+      github-issue:// witnesses. Used in tlog mode only.
     required: false
     default: ${{ github.token }}
   version:
@@ -55,28 +61,53 @@ runs:
         tool: git-ratchet
         version: ${{ inputs.version }}
 
+    # Whichever ref the mode stores its state in has to be present before the
+    # command runs: git-checkpoint compares against the last checkpoint for
+    # this ref, tlog appends to the log. Neither exists on a first run.
     - name: Fetch checkpoint refs
+      if: inputs.mode != 'tlog'
       shell: bash
       run: git fetch origin 'refs/checkpoints/*:refs/checkpoints/*' 2>/dev/null || true
+
+    - name: Fetch log ref
+      if: inputs.mode == 'tlog'
+      shell: bash
+      run: git fetch origin 'refs/ratchet/log:refs/ratchet/log' 2>/dev/null || true
 
     - name: Checkpoint
       shell: bash
       env:
         ORIGIN_KEY: ${{ inputs.origin-key }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
       run: |
         KEYFILE="${RUNNER_TEMP}/origin.vkey"
         printf '%s\n' "$ORIGIN_KEY" > "$KEYFILE"
         chmod 600 "$KEYFILE"
+        trap 'rm -f "$KEYFILE"' EXIT
 
-        git-ratchet checkpoint \
-          --ref "${{ inputs.ref }}" \
-          --key "$KEYFILE" \
-          --policy "${{ inputs.policy }}" \
-          --witness-timeout "${{ inputs.timeout }}s"
+        if [ "${{ inputs.mode }}" = "tlog" ]; then
+          # Recording the ref and checkpointing the log are separate: one
+          # checkpoint covers whatever the log holds, so it takes no --ref.
+          git-ratchet log \
+            --mode tlog \
+            --ref "${{ inputs.ref }}"
 
-        rm -f "$KEYFILE"
+          git-ratchet checkpoint \
+            --mode tlog \
+            --key "$KEYFILE" \
+            --policy "${{ inputs.policy }}" \
+            --github-token "$GITHUB_TOKEN_INPUT" \
+            --witness-timeout "${{ inputs.timeout }}s"
+        else
+          git-ratchet checkpoint \
+            --ref "${{ inputs.ref }}" \
+            --key "$KEYFILE" \
+            --policy "${{ inputs.policy }}" \
+            --witness-timeout "${{ inputs.timeout }}s"
+        fi
 
     - name: Push checkpoint ref
+      if: inputs.mode != 'tlog'
       shell: bash
       run: |
         REF="${{ inputs.ref }}"
@@ -84,3 +115,11 @@ runs:
         # or refs/checkpoints/tags/<tag>.
         CHECKPOINT_REF="refs/checkpoints/${REF#refs/}"
         git push --force origin "$CHECKPOINT_REF"
+
+    - name: Push log ref
+      if: inputs.mode == 'tlog'
+      shell: bash
+      # Not --force. Each log commit is parented on the one before, so an
+      # ordinary push rejects a rewritten log before any git-ratchet code
+      # runs -- which is a check worth keeping, not one to override.
+      run: git push origin 'refs/ratchet/log'
