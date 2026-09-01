@@ -1,26 +1,23 @@
-# Transparency log mode
+# The transparency log
 
-This document specifies `tlog` mode: an alternative to git-ratchet's default
-[git-checkpoint](git-checkpoint.md) format in which the repository maintains a
+This document specifies git-ratchet's format: the repository maintains a
 [Merkle transparency log][tlog-tiles] of its own ref updates, stored in the
-repository as Git refs, and checkpointed with a standard
-[tlog-checkpoint][] cosigned by standard [tlog-witness][] witnesses.
+repository as Git refs, and checkpointed with a standard [tlog-checkpoint][]
+cosigned by standard [tlog-witness][] witnesses.
 
-Both modes are available. Select one with `--mode`:
+Recording a ref and checkpointing the log are disjoint operations:
 
 ```
-git-ratchet log        --mode tlog ...
-git-ratchet checkpoint --mode tlog ...
-git-ratchet verify     --mode tlog ...
-witness                -mode tlog ...
+git-ratchet log        --ref refs/heads/main   # grows the log, locally
+git-ratchet checkpoint --key ... --policy ...  # gets its head cosigned
+git-ratchet verify     --ref refs/heads/main --policy ...
 ```
 
-`log` exists only in this mode: it is what grows the transparency log. In
-`git-checkpoint` mode there is no log, and a checkpoint covers a single ref, so
-`checkpoint` takes `--ref` there and rejects it here. Each command says so
-rather than quietly doing the other thing.
+`log` is what grows the log. A checkpoint covers whatever the log holds, so it
+takes no `--ref`.
 
-`--mode git-checkpoint` is the default and is unchanged.
+An earlier format stored a signed note per ref; see
+[git-checkpoint mode (removed)](git-checkpoint.md).
 
 [tlog-tiles]: https://c2sp.org/tlog-tiles
 [tlog-checkpoint]: https://c2sp.org/tlog-checkpoint
@@ -38,18 +35,17 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## Why
 
-In `git-checkpoint` mode the witness verifies Git commit ancestry, so it will
-not cosign a rollback. Doing that requires a witness specification of
-git-ratchet's own: an operator can only witness a git-ratchet repository by
-running git-ratchet's witness. The security of a ratchet rests on witness
-diversity, and a bespoke specification is an obstacle to it.
+A witness that verifies Git commit ancestry will not cosign a rollback, but
+asking it to do so requires a witness specification of git-ratchet's own: an
+operator could only witness a git-ratchet repository by running git-ratchet's
+witness. The security of a ratchet rests on witness diversity, and a bespoke
+specification is an obstacle to it.
 
-`tlog` mode removes that obstacle. The checkpoint is an ordinary
-`tlog-checkpoint` and the witness call is an ordinary `tlog-witness`
-`add-checkpoint`, so any conforming witness can cosign a git-ratchet log
-without knowing what Git is.
+The log removes that obstacle. The checkpoint is an ordinary `tlog-checkpoint`
+and the witness call is an ordinary `tlog-witness` `add-checkpoint`, so any
+conforming witness can cosign a git-ratchet log without knowing what Git is.
 
-The ratchet is enforced in both modes. What changes is where: see
+The ratchet is still enforced. What changes is where: see
 [Security properties](#security-properties).
 
 ## The log
@@ -87,7 +83,7 @@ ref-record/v1
 `<ref>` is a full ref path and MUST begin with `refs/heads/` or `refs/tags/`.
 `<object>` is a lowercase hex object hash of 40 characters (SHA-1) or 64
 (SHA-256): a commit hash for branches and lightweight tags, the tag object hash
-for annotated tags — the same value `git-checkpoint` mode binds.
+for annotated tags.
 
 Entries record **state, not transitions**. An entry does not name the ref's
 previous value. The log's ordering already establishes it, and a self-asserted
@@ -146,7 +142,7 @@ was meant to rule out.
 
 A future extension might record that a commit has been excised from history —
 sometimes a legal requirement, and otherwise indistinguishable from the
-rewriting this mode exists to detect. It is **not implemented**; it is set out
+rewriting the log exists to detect. It is **not implemented**; it is set out
 here to show how the rules above accommodate a new type.
 
 ```
@@ -179,8 +175,7 @@ The log is checkpointed with a [tlog-checkpoint][] body:
 <base64 root hash>
 ```
 
-The origin is the same identifier `git-checkpoint` mode uses — the key name
-from the origin's [signed-note][] verifier key. The size is the number of
+The origin is the key name from the origin's [signed-note][] verifier key. The size is the number of
 entries. The root hash is the RFC 6962 Merkle tree hash over all entry leaf
 hashes.
 
@@ -195,14 +190,12 @@ Witnesses append [tlog-cosignature][] lines.
 Signatures follow [signed-note][] and [tlog-cosignature][], and are produced and
 verified by [transparency-dev/formats][formats].
 
-One consequence is specific to this mode. signed-note assigns `0x06` to
+One consequence is worth stating. signed-note assigns `0x06` to
 timestamped ML-DSA-44 (sub)tree cosignatures and assigns nothing to a plain
 ML-DSA-44 signature over a note's text, so an ML-DSA-44 signature is always the
 `cosigned_message` construction, including when the signer is the log. That
 construction names a log origin, a leaf range and a Merkle root, so it is
-defined only over a tlog-checkpoint. ML-DSA-44 keys therefore work in this mode
-and not in `git-checkpoint` mode, whose notes have no such fields;
-`git-checkpoint` mode is Ed25519-only.
+defined only over a tlog-checkpoint, which is what git-ratchet signs.
 
 [formats]: https://github.com/transparency-dev/formats
 
@@ -243,7 +236,7 @@ tlog-tiles client wanted to consume the log directly.
 
 ## Policy
 
-`tlog` mode reads a [tlog-policy][] file, parsed and evaluated by
+git-ratchet reads a [tlog-policy][] file, parsed and evaluated by
 `transparency-dev/formats/policy`:
 
 ```
@@ -253,11 +246,7 @@ group <name> <all|any|k> <member>...
 quorum <name|none>
 ```
 
-Note the field order: the vkey precedes the optional URL. The policy parser
-`git-checkpoint` mode uses puts the URL first, so **a policy file serves one
-mode or the other**, not both. Aligning `git-checkpoint` mode would break
-policy files already deployed, so it keeps its own parser until that is worth
-doing on its own terms.
+Note the field order: the vkey precedes the optional URL.
 
 Application-specific URL schemes pass through untouched, so a
 `github-issue://owner/repo` witness is accepted.
@@ -273,15 +262,14 @@ depends on that.
 
 ## Witnessing
 
-`tlog` mode is a [tlog-witness][] *client*. It submits `add-checkpoint` requests
+git-ratchet is a [tlog-witness][] *client*. It submits `add-checkpoint` requests
 and collects [cosignatures][tlog-cosignature]; it does not implement a witness.
 
 A `tlog-checkpoint` names an origin, a tree size and a root hash and nothing
 else, so any witness on the existing network can cosign one without knowing
-what a Git ref is. A `git-checkpoint` needs a witness that understands commit
-ancestry, which is why `git-checkpoint` mode provides one. A checkpoint here
-also carries nothing repository-specific, so a private repository can use
-public witnesses without disclosing anything about its contents.
+what a Git ref is. A checkpoint also carries nothing repository-specific, so a
+private repository can use public witnesses without disclosing anything about
+its contents.
 
 The client is [transparency-dev/witness][witness-impl]'s, and the tests run
 against that project's witness implementation. Both halves being ours would let
@@ -289,8 +277,8 @@ a mistake in one agree with the same mistake in the other.
 
 ### Witnesses reached by other transports
 
-`checkpoint --mode tlog` contacts every witness in the policy itself, whatever
-carries it. A witness reached over HTTP is a POST; a
+`checkpoint` contacts every witness in the policy itself, whatever carries
+it. A witness reached over HTTP is a POST; a
 [GitHub Issue witness](github-issue-witness.md) is an issue and a comment.
 
 The carrier is an `http.RoundTripper` registered for the witness's URL scheme,
@@ -298,14 +286,13 @@ so the code that submits a checkpoint does not know which one it got. Only the
 delivery differs: the messages are the `add-checkpoint` request and response,
 and the witness is `transparency-dev/witness`, so every rule in
 [tlog-witness][] applies unchanged — including the ratchet, which is why
-`--stored-checkpoint` is required of a GitHub Issue witness rather than
-optional as it is in `git-checkpoint` mode.
+`--stored-checkpoint` is required of a GitHub Issue witness: a witness with no
+state cannot ratchet.
 
 A witness that holds a different tree size answers 409 with the size it does
 hold, and the client regenerates its consistency proof from there and resubmits
-once. `git-checkpoint` mode avoids that round trip by sending a commit chain
-spanning any gap; a consistency proof is anchored to a specific size, so the
-recovery costs one extra request.
+once. A consistency proof is anchored to a specific size, so recovering from a
+stale one costs an extra request.
 
 The witness never sees the entries. It cannot tell a fast-forward from a
 rollback, and it is not asked to — [Verification](#verification) is where that
@@ -325,7 +312,7 @@ key and a quorum of witnesses over the network. `log` takes any number of refs;
 leaves logged entries where they are, to be covered by the next checkpoint,
 rather than discarding them.
 
-`git-ratchet log --mode tlog --ref R...` performs, in order:
+`git-ratchet log --ref R...` performs, in order:
 
 1. For each ref, resolve it and append a `ref-record` naming the object it
    points at, unless the ref's latest entry already names that object.
@@ -335,7 +322,7 @@ rather than discarding them.
 3. Write the entries as one commit on the log ref, carrying the stored
    checkpoint forward unchanged.
 
-`git-ratchet checkpoint --mode tlog` performs, in order:
+`git-ratchet checkpoint` performs, in order:
 
 1. Refuse an empty log.
 2. **Walk the chain of every ref in the log**, as above.
@@ -378,7 +365,7 @@ having happened.
 
 ## Verification
 
-`git-ratchet verify --mode tlog` performs, in order:
+`git-ratchet verify` performs, in order:
 
 1. Read `refs/ratchet/log` and its stored checkpoint, and verify it against the
    policy: it MUST carry an origin line and signature matching one of the
@@ -420,15 +407,14 @@ entries were removed.
 Verification reads only the refs it was asked about. A log ref carrying
 unwitnessed entries is not reported.
 
-Step 3 is the ratchet. It replaces what the witness does in `git-checkpoint`
-mode, and it is always performed. It MUST NOT be skipped on the grounds that
-`log` or `checkpoint` already applied the same rule: a verifier cannot know
-whether they ran, and an attacker writing to the log ref would not have run
-them.
+Step 3 is the ratchet, and it is always performed. It MUST NOT be skipped on
+the grounds that `log` or `checkpoint` already applied the same rule: a
+verifier cannot know whether they ran, and an attacker writing to the log ref
+would not have run them.
 
-The walk does more work than `git-checkpoint` mode's `verify` but is still
-cheap. The log and the commit objects are in the same repository, so it is a
-sequence of local `git merge-base --is-ancestor` calls with nothing to fetch.
+The walk is cheap. The log and the commit objects are in the same repository,
+so it is a sequence of local `git merge-base --is-ancestor` calls with nothing
+to fetch.
 
 If a logged commit is missing from the object database — because a rollback was
 followed by garbage collection — the walk fails with a diagnostic saying so.
@@ -437,24 +423,13 @@ repository cannot produce it.
 
 ## Security properties
 
-Both modes give the same guarantee, and in both a relying party establishes it
-by running `verify`. They differ in where the ratchet is enforced, and so in
-how much `verify` has to do.
+A relying party establishes the guarantee by running `verify`. The witness is
+not where the ratchet is enforced, which has consequences worth stating
+plainly.
 
-| | `git-checkpoint` | `tlog` |
-| :--- | :--- | :--- |
-| Witness verifies | Git commit ancestry | Merkle tree consistency |
-| Witness can cosign a rollback | No | Yes |
-| A rollback is refused by | The witness, at cosigning time | `verify`, at verification time |
-| `verify` does | O(1): checks one signed note | O(entries for the ref): walks the log |
-| Usable with third-party witnesses | No | Yes |
-| Checkpoint meaningful standalone | Yes — asserts a ref is at a commit | No — asserts only a log's head |
-
-`log` and `checkpoint` also refuse to record a rewrite. They are absent from
-that table because they protect the operator, not the relying party: see
+`log` and `checkpoint` also refuse to record a rewrite, but they protect the
+operator, not the relying party: see
 [The chain walks here are not security controls](#the-chain-walks-here-are-not-security-controls).
-
-Three consequences:
 
 **A witness will cosign a rollback.** Appending a rolled-back state to a log is
 a consistent log operation, and a witness that sees only tree heads has no
@@ -462,20 +437,16 @@ basis to object; nothing in a consistency proof says anything about Git
 ancestry. What the witness attests to is that the log is append-only, which is
 what makes a rollback, once recorded, undeniable.
 
-**`verify` does the ancestry check itself.** In `git-checkpoint` mode the
-witness has done it, so `verify` reads one signed note. Here `verify` walks the
-logged entries for the ref. It MUST do so on every run: it cannot know whether
-anything checked the log before it, and an attacker writing to the log ref
-would not have.
+**`verify` does the ancestry check itself.** It walks the logged entries for
+the ref, and MUST do so on every run: it cannot know whether anything checked
+the log before it, and an attacker writing to the log ref would not have.
 
-**A checkpoint no longer means anything on its own.** A `git-checkpoint` is a
-semantic attestation — *this witness attests `main` is at this commit, having
-arrived there by fast-forward* — and can be quoted as evidence by someone who
-does not have the repository. A `tlog-checkpoint` attests only that a log is
-append-only and its head is this. Anything that consumes checkpoints outside
+**A checkpoint means nothing on its own.** A `tlog-checkpoint` attests only
+that a log is append-only and that its head is this; it says nothing about
+where any ref points. Anything that consumes checkpoints outside
 `git-ratchet verify` — a build attestation referencing one, say — is relying on
-a property `tlog` mode does not provide. This is the one respect in which the
-two modes are not interchangeable.
+a property this format does not provide. Quoting a checkpoint as evidence that
+a branch is at a commit requires the log, and the walk.
 
 Tamper-evidence is unchanged. A rollback that reaches the log is permanent,
 cosigned, and undeniable; the log cannot be rewritten to remove it without
@@ -484,7 +455,7 @@ losing witness cosignatures.
 ## Implementation
 
 The Merkle tree comes from [`github.com/transparency-dev/merkle`][merkle],
-maintained by the authors of the transparency-log specifications this mode
+maintained by the authors of the transparency-log specifications this format
 implements. Consistency verification is what a witness runs to decide whether
 to cosign, so a bespoke implementation of it would be a poor trade.
 
@@ -512,7 +483,7 @@ live in tiled storage, which these do not.
 
 ## Scope
 
-The following are not implemented in this mode:
+The following are not implemented:
 
 - **Hash tiles**, for the reason given above.
 - **Concurrency.** A single log serialises writes across all of a repository's

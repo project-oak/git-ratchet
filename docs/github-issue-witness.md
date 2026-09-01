@@ -9,11 +9,6 @@ comment.
 The witness state is stored in the repo itself as committed files, and the
 full audit trail is preserved in the repo's commit history.
 
-A `github-issue` witness serves [`tlog` mode](tlog-variant.md) only.
-`git-checkpoint` mode reaches its witnesses over HTTP, because its witnesses
-verify Git commit ancestry and so must run git-ratchet's own witness; see
-[docs/witness-protocol.md](witness-protocol.md).
-
 ## Policy format
 
 In a policy file, declare a GitHub Issue witness using the `github-issue://`
@@ -39,7 +34,7 @@ response, in place of a POST and its reply.
 open an issue on the witness repository:
 
 ```bash
-git-ratchet checkpoint --mode tlog --key origin.key --policy policy.txt \
+git-ratchet checkpoint --key origin.key --policy policy.txt \
     --github-token "$TOKEN" --witness-timeout 5m
 ```
 
@@ -161,8 +156,7 @@ Generate a key pair using the `genkey` tool:
 bazel run //tools/genkey -- --role=witness --name=<name> [--algo=<algo>] > witness-key
 ```
 
-Where `<algo>` is one of `ed25519` (default) or `mldsa44`. `mldsa44` keys serve
-`tlog` mode only; see [docs/tlog-variant.md](tlog-variant.md).
+Where `<algo>` is one of `ed25519` (default) or `mldsa44`.
 This writes the private key to stdout in the [signed-note] private key encoding
 (`PRIVATE+KEY+...`), and prints the verifier key (vkey) to stderr.
 
@@ -268,14 +262,12 @@ On the origin side, add the witness to your policy file:
 witness mywitness github-issue://my-org/git-witness <witness-vkey>
 ```
 
-A workflow reaches it through the [`checkpoint`](../actions/checkpoint) action
-in `tlog` mode, with a token that can open issues on the witness repository:
+A workflow reaches it through the [`checkpoint`](../actions/checkpoint) action,
+with a token that can open issues on the witness repository:
 
 ```yaml
       - uses: project-oak/git-ratchet/actions/checkpoint@main
         with:
-          mode: tlog
-          ref: ${{ github.ref }}
           origin-key: ${{ secrets.ORIGIN_KEY }}
           policy: policy.txt
           github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}
