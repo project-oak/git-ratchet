@@ -152,11 +152,11 @@ func (c *checkpointCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) su
 		origin = signer.Name
 	}
 
-	return c.checkpointLog(origin, signer)
+	return c.run(origin, signer)
 }
 
-// checkpointLog checkpoints the repository's transparency log.
-func (c *checkpointCmd) checkpointLog(origin string, signer *note.Signer) subcommands.ExitStatus {
+// run checkpoints the repository's transparency log.
+func (c *checkpointCmd) run(origin string, signer *note.Signer) subcommands.ExitStatus {
 	pol, err := policy.FromPath(c.policyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: loading policy: %v\n", err)
@@ -172,7 +172,7 @@ func (c *checkpointCmd) checkpointLog(origin string, signer *note.Signer) subcom
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitUsageError
 	}
-	if err := checkpointTlog(c.repoDir, origin, signer, pol, witnessClient(c.githubToken), c.timeout); err != nil {
+	if err := checkpointLog(c.repoDir, origin, signer, pol, witnessClient(c.githubToken), c.timeout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
@@ -220,7 +220,7 @@ func (c *logCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcomman
 		}
 	}
 
-	if err := logRefsTlog(c.repoDir, c.refs); err != nil {
+	if err := logRefs(c.repoDir, c.refs); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return subcommands.ExitFailure
 	}
@@ -315,7 +315,7 @@ type verifyResult struct {
 func verifyRefs(repoDir string, refs []string, policyPath string) []verifyResult {
 	results := make([]verifyResult, len(refs))
 
-	l, err := tlogLogFromPolicy(repoDir, policyPath)
+	l, err := logFromPolicy(repoDir, policyPath)
 	if err != nil {
 		for i, ref := range refs {
 			results[i] = verifyResult{ref, err}
@@ -323,17 +323,17 @@ func verifyRefs(repoDir string, refs []string, policyPath string) []verifyResult
 		return results
 	}
 	for i, ref := range refs {
-		results[i] = verifyResult{ref, verifySingleRefTlog(repoDir, ref, l)}
+		results[i] = verifyResult{ref, verifySingleRef(repoDir, ref, l)}
 	}
 	return results
 }
 
-// tlogLogFromPolicy loads a tlog-policy and returns the checkpointed part of
+// logFromPolicy loads a tlog-policy and returns the checkpointed part of
 // the repository's log under it.
-func tlogLogFromPolicy(repoDir, policyPath string) (*gitlog.Log, error) {
-	tpol, err := policy.FromPath(policyPath)
+func logFromPolicy(repoDir, policyPath string) (*gitlog.Log, error) {
+	pol, err := policy.FromPath(policyPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading policy: %w", err)
 	}
-	return checkpointedLog(repoDir, tpol)
+	return checkpointedLog(repoDir, pol)
 }

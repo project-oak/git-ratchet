@@ -45,7 +45,7 @@ refusal is a response to return, not an error to swallow.
 ## Building
 
 ```
-bazel build //witness/cosign
+bazel build //cosign
 ```
 
 ## Example

@@ -34,10 +34,10 @@ const (
 	testSize   = 7
 )
 
-func testTlogRoot() tlog.Hash { return tlog.HashLeaf([]byte("root")) }
+func testRoot() tlog.Hash { return tlog.HashLeaf([]byte("root")) }
 
-func testTlogCheckpoint() flog.Checkpoint {
-	return tlog.NewCheckpoint(testOrigin, testSize, testTlogRoot())
+func testCheckpoint() flog.Checkpoint {
+	return tlog.NewCheckpoint(testOrigin, testSize, testRoot())
 }
 
 // signTestCheckpoint produces a signed tlog-checkpoint note.
@@ -47,7 +47,7 @@ func signTestCheckpoint(t *testing.T, sigType SigType) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := SignTlogCheckpoint(string(testTlogCheckpoint().Marshal()), signer)
+	signed, err := SignTlogCheckpoint(string(testCheckpoint().Marshal()), signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,9 +79,9 @@ func TestKeyEncodingsMatchFormats(t *testing.T) {
 
 		// The signer built through the shim must agree with the verifier
 		// built from the matching vkey.
-		s, err := tlogSigner(signer)
+		s, err := checkpointSigner(signer)
 		if err != nil {
-			t.Fatalf("sigType 0x%02x: tlogSigner: %v", sigType, err)
+			t.Fatalf("sigType 0x%02x: checkpointSigner: %v", sigType, err)
 		}
 		if s.KeyHash() != v.KeyHash() {
 			t.Errorf("sigType 0x%02x: signer and verifier key hashes differ", sigType)
@@ -187,8 +187,8 @@ func cosignedMessageV1(cosignerName string, timestamp uint64, logOrigin string, 
 // construction, so a log signing its own checkpoint signs the same message a
 // witness would, over the range [0, size).
 func TestMLDSA44MessageMatchesSpec(t *testing.T) {
-	root := testTlogRoot()
-	body := string(testTlogCheckpoint().Marshal())
+	root := testRoot()
+	body := string(testCheckpoint().Marshal())
 
 	for _, tc := range []struct {
 		name string
@@ -276,7 +276,7 @@ func TestSignTlogCheckpointRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		signed, err := SignTlogCheckpoint(string(testTlogCheckpoint().Marshal()), signer)
+		signed, err := SignTlogCheckpoint(string(testCheckpoint().Marshal()), signer)
 		if err != nil {
 			t.Fatalf("sigType 0x%02x: %v", sigType, err)
 		}
@@ -289,8 +289,8 @@ func TestSignTlogCheckpointRoundTrip(t *testing.T) {
 		}
 
 		// A signature over a different tree must not verify.
-		other := tlog.NewCheckpoint(testOrigin, testSize+1, testTlogRoot())
-		tampered := strings.Replace(signed, string(testTlogCheckpoint().Marshal()), string(other.Marshal()), 1)
+		other := tlog.NewCheckpoint(testOrigin, testSize+1, testRoot())
+		tampered := strings.Replace(signed, string(testCheckpoint().Marshal()), string(other.Marshal()), 1)
 		if _, _, _, err := flog.ParseCheckpoint([]byte(tampered), testOrigin, v); err == nil {
 			t.Errorf("sigType 0x%02x: signature verified over a different tree size", sigType)
 		}
@@ -326,11 +326,11 @@ func newRemoteMLDSASigner(t *testing.T, name string, role KeyRole) *Signer {
 	}
 }
 
-// TestTlogSignerFromCryptoSigner covers the path a KMS-backed ML-DSA-44 key
+// TestCheckpointSignerFromCryptoSigner covers the path a KMS-backed ML-DSA-44 key
 // takes. There is no local key material, so SKey cannot render one and the
 // signer has to be built from the crypto.Signer instead. The signatures it
 // produces must be the same ones a local key produces.
-func TestTlogSignerFromCryptoSigner(t *testing.T) {
+func TestCheckpointSignerFromCryptoSigner(t *testing.T) {
 	origin := newRemoteMLDSASigner(t, "test.example/log", RoleOrigin)
 	witness := newRemoteMLDSASigner(t, "test.example/witness", RoleCosigner)
 

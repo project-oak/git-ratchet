@@ -21,7 +21,7 @@ go_library(
     name = "git-ratchet_lib",
     srcs = [
         "main.go",
-        "tlogcmd.go",
+        "ratchet.go",
     ],
     importpath = "github.com/project-oak/git-ratchet",
     visibility = ["//visibility:private"],
@@ -47,7 +47,7 @@ go_binary(
 
 go_test(
     name = "git-ratchet_test",
-    srcs = ["tlogcmd_test.go"],
+    srcs = ["ratchet_test.go"],
     data = [":git-ratchet"],  # keep
     embed = [":git-ratchet_lib"],
     deps = [

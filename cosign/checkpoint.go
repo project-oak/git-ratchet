@@ -30,14 +30,14 @@ import (
 	iwitness "github.com/project-oak/git-ratchet/internal/witness"
 )
 
-// cosignTlog witnesses one add-checkpoint request and returns the response.
+// answerAddCheckpoint witnesses one add-checkpoint request and returns the response.
 //
 // Both are message/http: the request arrives as an issue body and the response
 // is posted as a comment. The witness is transparency-dev/witness's own HTTP
 // handler, so a github-issue witness answers exactly as an HTTP one would --
 // same status codes, same Content-Type on a size conflict, same everything.
 // Only the wire differs.
-func cosignTlog(ctx context.Context, requestMessage string, witnessKey *inote.Signer, origins map[string]cosignOriginKey, statePath string) (string, error) {
+func answerAddCheckpoint(ctx context.Context, requestMessage string, witnessKey *inote.Signer, origins map[string]cosignOriginKey, statePath string) (string, error) {
 	if statePath == "" {
 		return "", fmt.Errorf("--stored-checkpoint is required: a witness with no state cannot ratchet")
 	}

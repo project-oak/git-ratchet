@@ -25,8 +25,8 @@ import (
 	"github.com/project-oak/git-ratchet/internal/tlog"
 )
 
-// writeTlogPolicy writes a policy file in the field order tlog-policy defines.
-func writeTlogPolicy(t *testing.T, body string) string {
+// writePolicy writes a policy file in the field order tlog-policy defines.
+func writePolicy(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "policy.txt")
 	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
@@ -89,12 +89,12 @@ func TestTlogPolicyAcceptsOurCheckpoint(t *testing.T) {
 			origin := mustKey(t, "test-origin", tc.originSig, note.RoleOrigin)
 			witness := mustKey(t, "test-witness", tc.cosigSig, note.RoleCosigner)
 
-			path := writeTlogPolicy(t, fmt.Sprintf(
+			path := writePolicy(t, fmt.Sprintf(
 				"log %s\nwitness w1 %s https://witness.example\n\nquorum w1\n",
 				origin.VKey(), witness.VKey()))
 			pol, err := FromPath(path)
 			if err != nil {
-				t.Fatalf("LoadTlog: %v", err)
+				t.Fatalf("FromPath: %v", err)
 			}
 			cp := []byte(signedCheckpoint(t, origin, witness))
 			if _, err := pol.Verify(cp); err != nil {
@@ -118,7 +118,7 @@ func TestFromPathErrors(t *testing.T) {
 	if _, err := FromPath(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Error("expected a missing policy file to be an error")
 	}
-	path := writeTlogPolicy(t, "not a policy\n")
+	path := writePolicy(t, "not a policy\n")
 	if _, err := FromPath(path); err == nil {
 		t.Error("expected a malformed policy to be an error")
 	} else if !strings.Contains(err.Error(), path) {

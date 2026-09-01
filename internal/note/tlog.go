@@ -42,10 +42,10 @@ func TlogCosigner(s *Signer) (sumdbnote.Signer, error) {
 	if s.Role != RoleCosigner {
 		return nil, fmt.Errorf("TlogCosigner requires a cosigner key, got origin")
 	}
-	return tlogSigner(s)
+	return checkpointSigner(s)
 }
 
-// tlogSigner returns a formats signer for the given key. It signs a
+// checkpointSigner returns a formats signer for the given key. It signs a
 // tlog-checkpoint note body according to the key's algorithm: a plain note
 // signature for 0x01, and the timestamped cosigned_message for 0x04 and 0x06.
 //
@@ -53,7 +53,7 @@ func TlogCosigner(s *Signer) (sumdbnote.Signer, error) {
 // one is wrapped as a crypto.Signer instead: formats builds the same
 // cosigned_message either way and calls Sign on it, which for a KMS key is a
 // remote call. Ed25519 does not need this path; see SignTlogCheckpoint.
-func tlogSigner(s *Signer) (sumdbnote.Signer, error) {
+func checkpointSigner(s *Signer) (sumdbnote.Signer, error) {
 	if len(s.seed) == 0 && s.SigType == MLDSA44 {
 		return fnote.NewMLDSASignerFromCrypto(s.Name, s.signer)
 	}
@@ -83,7 +83,7 @@ func SignTlogCheckpoint(body string, signer *Signer) (string, error) {
 		return Sign(body, signer)
 
 	case MLDSA44:
-		s, err := tlogSigner(signer)
+		s, err := checkpointSigner(signer)
 		if err != nil {
 			return "", err
 		}
@@ -126,7 +126,7 @@ func CosignTlogCheckpoint(signedNote string, signer *Signer) (string, error) {
 		return "", fmt.Errorf("unsupported cosigner signature type: 0x%02x", signer.SigType)
 	}
 
-	cosigner, err := tlogSigner(signer)
+	cosigner, err := checkpointSigner(signer)
 	if err != nil {
 		return "", err
 	}

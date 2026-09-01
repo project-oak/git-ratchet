@@ -110,7 +110,7 @@ cosign \
     --stored-checkpoint <path>
 ```
 
-A standalone witness binary (built via `bazel build //witness/cosign`) that reads an `add-checkpoint` request from a file and writes the witness's response to stdout, both as `message/http`. It is what a [GitHub Issue witness](docs/github-issue-witness.md) runs: the same protocol an HTTP witness serves, carried by an issue and a comment rather than a POST.
+A standalone witness binary (built via `bazel build //cosign`) that reads an `add-checkpoint` request from a file and writes the witness's response to stdout, both as `message/http`. It is what a [GitHub Issue witness](docs/github-issue-witness.md) runs: the same protocol an HTTP witness serves, carried by an issue and a comment rather than a POST.
 
 See `git-ratchet <command> --help` for details.
 
@@ -133,7 +133,7 @@ Requires [Bazel](https://bazel.build/) 9.1+:
 
 ```
 bazel build //:git-ratchet
-bazel build //witness/cosign
+bazel build //cosign
 ```
 
 ## Demo

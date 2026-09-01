@@ -34,14 +34,14 @@ import (
 	"github.com/project-oak/git-ratchet/internal/tlog"
 )
 
-// logRefsTlog records each ref's current object in the repository's
+// logRefs records each ref's current object in the repository's
 // transparency log.
 //
 // This is the only command that grows the log, and it is local: no key, no
 // network. The new entries sit past the stored checkpoint's size until
 // checkpoint has a quorum cosign the log's new head, and until then they are
 // evidence of nothing.
-func logRefsTlog(repoDir string, refs []string) error {
+func logRefs(repoDir string, refs []string) error {
 	l, err := gitlog.Open(repoDir)
 	if err != nil {
 		return fmt.Errorf("opening log: %w", err)
@@ -98,10 +98,10 @@ func logRefsTlog(repoDir string, refs []string) error {
 	return nil
 }
 
-// checkpointTlog has the log's current head cosigned by the policy's witnesses
+// checkpointLog has the log's current head cosigned by the policy's witnesses
 // and stores the result. It covers whatever the log holds; entries get there
-// through logRefsTlog.
-func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration) error {
+// through logRefs.
+func checkpointLog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration) error {
 	l, oldSize, err := logToCheckpoint(repoDir)
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TL
 		return fmt.Errorf("signing checkpoint: %w", err)
 	}
 
-	cosigLines, err := collectTlogCosignatures(pol, client, timeout, l, oldSize, signed)
+	cosigLines, err := collectCosignatures(pol, client, timeout, l, oldSize, signed)
 	if err != nil {
 		return err
 	}
@@ -137,9 +137,9 @@ func checkpointTlog(repoDir, origin string, signer *note.Signer, pol *fpolicy.TL
 	return nil
 }
 
-// collectTlogCosignatures submits the signed checkpoint to every witness in
+// collectCosignatures submits the signed checkpoint to every witness in
 // the policy, in parallel, and returns the cosignature lines collected.
-func collectTlogCosignatures(pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration, l *gitlog.Log, oldSize uint64, signed string) ([]string, error) {
+func collectCosignatures(pol *fpolicy.TLogPolicy, client *http.Client, timeout time.Duration, l *gitlog.Log, oldSize uint64, signed string) ([]string, error) {
 	type result struct {
 		policyName string
 		cosigLine  string
@@ -210,7 +210,7 @@ func checkpointedLog(repoDir string, pol *fpolicy.TLogPolicy) (*gitlog.Log, erro
 	return l.Checkpointed(cp)
 }
 
-// verifySingleRefTlog checks one ref against the verified log.
+// verifySingleRef checks one ref against the verified log.
 //
 // Every ratchet property is established here, from entries held locally: a
 // branch's logged states must each descend from the one before, and a tag must
@@ -219,7 +219,7 @@ func checkpointedLog(repoDir string, pol *fpolicy.TLogPolicy) (*gitlog.Log, erro
 // Entries of unrecognised types are skipped, which can leave the latest logged
 // state behind the real ref. The final comparison rejects a ref ahead of the
 // log, so that case fails rather than passing quietly.
-func verifySingleRefTlog(repoDir, ref string, l *gitlog.Log) error {
+func verifySingleRef(repoDir, ref string, l *gitlog.Log) error {
 	kind, err := gitutil.ParseRefKind(ref)
 	if err != nil {
 		return err

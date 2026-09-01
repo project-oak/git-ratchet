@@ -89,7 +89,7 @@ func main() {
 
 	// This is the same protocol an HTTP witness serves, carried as a file
 	// instead of a POST. The witness itself comes from transparency-dev.
-	response, err := cosignTlog(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
+	response, err := answerAddCheckpoint(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
