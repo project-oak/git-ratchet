@@ -46,6 +46,10 @@ on:
     branches: [main]
     tags: ['v*']
 
+concurrency:
+  group: git-ratchet-log
+  cancel-in-progress: false
+
 jobs:
   log:
     runs-on: ubuntu-latest
@@ -57,5 +61,11 @@ jobs:
           ref: ${{ github.ref }}
 ```
 
-Running both on the same event works too — put the `log` job first and have
-the `checkpoint` job `needs:` it.
+That workflow needs a companion: entries sit past the stored checkpoint until
+something cosigns the log's new head. Run [`checkpoint`](../checkpoint) on a
+schedule against the same repository, or run both on one event — its README
+carries that workflow in full.
+
+Whichever arrangement, give every workflow that writes `refs/ratchet/log` the
+same repository-wide `concurrency` group. Two runs starting from the same log
+head will race, and the loser's push is rejected.

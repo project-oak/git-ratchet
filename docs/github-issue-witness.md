@@ -262,10 +262,37 @@ On the origin side, add the witness to your policy file:
 witness mywitness github-issue://my-org/git-witness <witness-vkey>
 ```
 
-A workflow reaches it through the [`checkpoint`](../actions/checkpoint) action,
-with a token that can open issues on the witness repository:
+A workflow reaches it through the [`log`](../actions/log) and
+[`checkpoint`](../actions/checkpoint) actions, the second carrying a token that
+can open issues on the witness repository:
 
 ```yaml
+name: Checkpoint
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: git-ratchet-log
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: project-oak/git-ratchet/actions/log@main
+        with:
+          ref: ${{ github.ref }}
+
+  checkpoint:
+    needs: log
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - uses: project-oak/git-ratchet/actions/checkpoint@main
         with:
           origin-key: ${{ secrets.ORIGIN_KEY }}

@@ -46,14 +46,37 @@ permissions:
 
 ## Usage
 
+A checkpoint covers whatever the log holds, so something has to put a ref in
+the log first. On its own this Action would checkpoint a log with no new
+entries.
+
 ```yaml
+name: Checkpoint
 on:
   push:
     branches: [main]
     tags: ['v*']
 
+# One log, one writer. Both jobs write refs/ratchet/log, so a push to main and
+# a v* tag arriving together would race and the loser's push would be
+# rejected. The group is deliberately not keyed on the ref: there is one log,
+# not one per ref.
+concurrency:
+  group: git-ratchet-log
+  cancel-in-progress: false
+
 jobs:
+  log:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: project-oak/git-ratchet/actions/log@main
+        with:
+          ref: ${{ github.ref }}
+
   checkpoint:
+    needs: log
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -70,3 +93,7 @@ the witness repository:
 ```yaml
           github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}
 ```
+
+The two need not share a trigger. [`log`](../log) can run on every push while
+this runs on a schedule, which keeps the ref record prompt while asking
+witnesses for far fewer signatures.
