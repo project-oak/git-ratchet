@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command cosign witnesses a tlog-checkpoint delivered as a file rather than
-// as a POST, and writes the cosignature line to stdout. It is the witness half
-// of a github-issue witness.
+// Command cosign answers one add-checkpoint request delivered as a file rather
+// than as a POST, and writes the response to stdout. Both are message/http. It
+// is the witness half of a github-issue witness.
 //
 // Usage:
 //
 //	cosign \
 //	    --request request.txt \
 //	    --origin-vkeys origins.txt \
-//	    --key witness-key.pem \
+//	    --key witness.key \
 //	    --stored-checkpoint stored.txt
 package main
 
@@ -89,17 +89,17 @@ func main() {
 
 	// This is the same protocol an HTTP witness serves, carried as a file
 	// instead of a POST. The witness itself comes from transparency-dev.
-	cosigLine, err := cosignTlog(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
+	response, err := cosignTlog(context.Background(), bodyStr, witnessSigner, trustedOrigins, *storedCheckpointPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println(cosigLine)
+	fmt.Println(response)
 }
 
 // cosignOriginKey holds a trusted origin's public key and signature type.
 type cosignOriginKey struct {
-	// vkey is the line as it appeared in the file. tlog mode hands it to
+	// vkey is the line as it appeared in the file. It is handed to
 	// transparency-dev/witness, which builds its own verifier from it.
 	vkey    string
 	pub     interface{} // crypto.PublicKey
