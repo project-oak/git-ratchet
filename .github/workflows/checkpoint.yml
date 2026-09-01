@@ -33,3 +33,4 @@ jobs:
           origin-key: ${{ secrets.ORIGIN_KEY }}
           policy: ratchet-checkpoint.policy
           github-token: ${{ secrets.WITNESS_GITHUB_TOKEN }}
+          version: v0.2.0
