@@ -83,8 +83,10 @@ type checkpointCmd struct {
 	githubToken string
 }
 
-func (*checkpointCmd) Name() string     { return "checkpoint" }
-func (*checkpointCmd) Synopsis() string { return "Create a witnessed checkpoint for a branch or tag" }
+func (*checkpointCmd) Name() string { return "checkpoint" }
+func (*checkpointCmd) Synopsis() string {
+	return "Get the transparency log's head cosigned by witnesses"
+}
 func (*checkpointCmd) Usage() string {
 	return `checkpoint [flags]:
   Create a witnessed checkpoint of the repository's transparency log.
@@ -239,17 +241,24 @@ type verifyCmd struct {
 }
 
 func (*verifyCmd) Name() string     { return "verify" }
-func (*verifyCmd) Synopsis() string { return "Verify ref checkpoints against a witness policy" }
+func (*verifyCmd) Synopsis() string { return "Verify refs against the witnessed transparency log" }
 func (*verifyCmd) Usage() string {
 	return `verify [flags]:
-  Verify ref checkpoints against a witness policy.
+  Verify refs against the repository's witnessed transparency log.
 
-  Verifies checkpoint signatures against the policy and confirms each ref
-  still matches the checkpointed commit. The --ref flag can be repeated to
-  verify multiple refs in a single invocation.
+  Checks the log's stored checkpoint against the policy -- the log's own
+  signature and a quorum of witness cosignatures -- and then walks the logged
+  entries for each ref. The --ref flag can be repeated to verify several refs
+  in a single invocation.
 
-  For branches, the local ref must not be ahead of the checkpointed commit.
-  For tags, the tag must still point to the exact checkpointed commit.
+  For branches, every logged state must descend from the one before it, and
+  the local ref must not be ahead of the latest logged state. For tags, the
+  tag must never have been logged at a second object, and must still point at
+  the one it was logged at.
+
+  Only the part of the log the checkpoint covers is read. Entries appended
+  past the last cosigned checkpoint are not yet witnessed, so nothing verifies
+  against them.
 
 `
 }
