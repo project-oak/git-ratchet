@@ -12,21 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "gitutil",
     srcs = [
-        "commit_hash.go",
         "ref.go",
         "repo.go",
     ],
     importpath = "github.com/project-oak/git-ratchet/internal/gitutil",
     visibility = ["//:__subpackages__"],
-)
-
-go_test(
-    name = "gitutil_test",
-    srcs = ["commit_hash_test.go"],
-    embed = [":gitutil"],
 )
