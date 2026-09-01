@@ -358,18 +358,6 @@ func VerifyCosignature(body, sigLine string, pub crypto.PublicKey, sigType SigTy
 	return nil
 }
 
-// SigName extracts the signer name from a signature line.
-func SigName(sigLine string) (string, error) {
-	if !strings.HasPrefix(sigLine, SigPrefix) {
-		return "", fmt.Errorf("not a signature line")
-	}
-	rest := strings.TrimPrefix(sigLine, SigPrefix)
-	if i := strings.Index(rest, " "); i > 0 {
-		return rest[:i], nil
-	}
-	return "", fmt.Errorf("invalid signature line format")
-}
-
 // DecodeSigLine decodes a signature line and returns the raw bytes
 // (KeyHash[4] || … || signature). The first 4 bytes are the key hash as
 // embedded by the signer; callers can compare them against an expected hash
@@ -436,13 +424,10 @@ func ParseVKey(vkey string) (string, SigType, crypto.PublicKey, error) {
 	}
 }
 
-// KeyHash returns the 4-byte key hash for a name + public key + sig type.
+// keyHash returns the 4-byte key hash for a name, public key and algorithm
+// byte, as C2SP signed-note defines it:
 //
 //	SHA-256(name || "\n" || typeByte || publicKey)[:4]
-func KeyHash(name string, pub crypto.PublicKey, sigType SigType) [4]byte {
-	return keyHash(name, pubKeyBytes(pub), byte(sigType))
-}
-
 func keyHash(name string, pubBytes []byte, typeByte byte) [4]byte {
 	h := sha256.New()
 	h.Write([]byte(name + "\n"))
