@@ -56,8 +56,15 @@ func (c *Cmd) WithStdin(in string) *Cmd {
 // Run invokes git and returns its standard output verbatim, so a caller
 // reading an object gets the bytes and nothing else. Standard error belongs to
 // the error instead, which is an [*ExitError] when git ran and exited non-zero.
+//
+// Every invocation passes --no-replace-objects. A replace ref substitutes one
+// object's content for another's everywhere git reads it, so with them honoured
+// a forged stand-in for a logged commit can put an unlogged commit into that
+// commit's ancestry, and the ancestry check accepts a ref the log never
+// covered. What is checkpointed is the true object graph, so that is the graph
+// every read here has to see.
 func (c *Cmd) Run(args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", c.repoDir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", c.repoDir, "--no-replace-objects"}, args...)...)
 	if len(c.env) > 0 {
 		cmd.Env = append(os.Environ(), c.env...)
 	}

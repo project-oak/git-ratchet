@@ -42,7 +42,6 @@ func main() {
 	subcommands.Register(&logCmd{}, "")
 	subcommands.Register(&checkpointCmd{}, "")
 	subcommands.Register(&verifyCmd{}, "")
-	subcommands.Register(&auditCmd{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
@@ -616,106 +615,4 @@ func verifySingleRef(repoDir, ref string, pol *policy.Policy) error {
 	}
 
 	return nil
-}
-
-type auditCmd struct {
-	refs       stringSlice
-	policyPath string
-	repoDir    string
-	mode       string
-}
-
-func (*auditCmd) Name() string     { return "audit" }
-func (*auditCmd) Synopsis() string { return "Run a comprehensive integrity audit" }
-func (*auditCmd) Usage() string {
-	return `audit [flags]:
-  Run a comprehensive integrity audit of the repository.
-
-  Combines three checks into a single end-to-end integrity scan:
-
-  1. git fsck: Walks the full object database and verifies that every
-     object's content matches its hash, all referenced objects exist,
-     and the DAG is well-formed.
-
-  2. git-ratchet verify: Verifies checkpoints for the specified --ref
-     flags against the witness policy.
-
-  3. Replace ref rejection: Errors if any refs exist under refs/replace/.
-     Replace refs allow transparent object substitution, breaking the
-     Merkle chain property that git-ratchet relies on.
-
-`
-}
-
-func (c *auditCmd) SetFlags(f *flag.FlagSet) {
-	f.Var(&c.refs, "ref", "Full ref path to verify (e.g. refs/heads/main) (required, repeatable)")
-	f.StringVar(&c.policyPath, "policy", "", "Path to witness policy file (required)")
-	f.StringVar(&c.repoDir, "repo", ".", "Path to git repository")
-	f.StringVar(&c.mode, "mode", modeGitCheckpoint, "Checkpoint format: "+modeGitCheckpoint+" or "+modeTlog)
-}
-
-func (c *auditCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...any) subcommands.ExitStatus {
-	if err := validateMode(c.mode); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return subcommands.ExitUsageError
-	}
-	if c.policyPath == "" || len(c.refs) == 0 {
-		fmt.Fprintln(os.Stderr, "error: --policy and at least one --ref are required")
-		fmt.Fprint(os.Stderr, c.Usage())
-		return subcommands.ExitUsageError
-	}
-
-	for _, ref := range c.refs {
-		if _, err := gitutil.ParseRefKind(ref); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid --ref %q: %v\n", ref, err)
-			return subcommands.ExitUsageError
-		}
-	}
-
-	failed := 0
-
-	// Phase 1: git fsck — verify object database integrity.
-	fmt.Println("Running git fsck...")
-	if err := gitutil.Fsck(c.repoDir); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL fsck: %v\n", err)
-		failed++
-	} else {
-		fmt.Println("ok   fsck")
-	}
-
-	// Phase 2: git-ratchet verify — check all refs.
-	fmt.Println("Running checkpoint verification...")
-	results := verifyRefs(c.repoDir, []string(c.refs), c.policyPath, c.mode)
-	for _, r := range results {
-		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL verify %s: %v\n", r.ref, r.err)
-			failed++
-		} else {
-			fmt.Printf("ok   verify %s\n", r.ref)
-		}
-	}
-
-	// Phase 3: replace ref rejection.
-	fmt.Println("Checking for replace refs...")
-	replaceRefs, err := gitutil.ListReplaceRefs(c.repoDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL replace-refs: %v\n", err)
-		failed++
-	} else if len(replaceRefs) > 0 {
-		fmt.Fprintf(os.Stderr, "FAIL replace-refs: found %d replace ref(s) (replace refs allow transparent object substitution, breaking Merkle chain integrity):\n", len(replaceRefs))
-		for _, r := range replaceRefs {
-			fmt.Fprintf(os.Stderr, "       %s\n", r)
-		}
-		failed++
-	} else {
-		fmt.Println("ok   replace-refs")
-	}
-
-	// Summary.
-	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "\naudit: %d check(s) failed\n", failed)
-		return subcommands.ExitFailure
-	}
-	fmt.Println("\naudit: all checks passed")
-	return subcommands.ExitSuccess
 }

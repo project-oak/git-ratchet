@@ -206,6 +206,43 @@ func (f *tlogFixture) verify(t *testing.T, refs ...string) (string, error) {
 	return string(out), err
 }
 
+// TestTlogReplaceRefIgnored covers a bypass that replace refs would otherwise
+// open. A replace ref substitutes one object's content for another's wherever
+// git reads it, so forging a stand-in for a logged commit whose parent is an
+// unlogged commit puts that commit into the logged one's ancestry -- and the
+// ancestry check accepts a ref the log never covered. Reads pass
+// --no-replace-objects, so the substitution has no effect here.
+func TestTlogReplaceRefIgnored(t *testing.T) {
+	f := newTlogFixture(t)
+
+	makeCommit(t, f.repoDir, "logged commit")
+	f.logAndCheckpoint(t, "refs/heads/main")
+	logged := strings.TrimSpace(runOutput(t, f.repoDir, "git", "rev-parse", "HEAD"))
+
+	// A commit on the branch that was never submitted to the log.
+	makeCommit(t, f.repoDir, "unlogged commit")
+	unlogged := strings.TrimSpace(runOutput(t, f.repoDir, "git", "rev-parse", "HEAD"))
+
+	if out, err := f.verify(t, "refs/heads/main"); err == nil {
+		t.Fatalf("verify accepted an unlogged commit before any replace ref:\n%s", out)
+	}
+
+	// Substitute a stand-in for the logged commit that descends from the
+	// unlogged one. Ordinary git reads of the logged hash now walk through it.
+	tree := strings.TrimSpace(runOutput(t, f.repoDir, "git", "rev-parse", logged+"^{tree}"))
+	forged := strings.TrimSpace(runOutput(t, f.repoDir,
+		"git", "commit-tree", tree, "-p", unlogged, "-m", "forged stand-in"))
+	run(t, f.repoDir, "git", "replace", "-f", logged, forged)
+
+	out, err := f.verify(t, "refs/heads/main")
+	if err == nil {
+		t.Fatalf("verify accepted an unlogged commit through a replace ref:\n%s", out)
+	}
+	if !strings.Contains(out, unlogged) {
+		t.Errorf("expected the failure to name the unlogged commit %s:\n%s", unlogged, out)
+	}
+}
+
 // TestTlogIntegration walks the happy path: successive fast-forward commits are
 // logged, cosigned, and verify cleanly.
 func TestTlogIntegration(t *testing.T) {

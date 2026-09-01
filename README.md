@@ -112,17 +112,7 @@ Verifies checkpoint signatures against the policy and confirms each ref still ma
 
 In `--mode tlog` this additionally walks the logged entries for each ref, checking that branch history only ever moved forward and that no tag was ever logged at a second object. See [Checkpoint modes](#checkpoint-modes).
 
-### `git-ratchet audit`
-
-```
-git-ratchet audit --policy <path> --ref <refpath> [--ref <refpath>...] [flags]
-```
-
-Runs a comprehensive end-to-end integrity scan combining three checks:
-
-1. **`git fsck`**: Walks the full object database and verifies that every object's content matches its hash, all referenced objects exist, and the DAG is well-formed.
-2. **`git-ratchet verify`**: Verifies all checkpoint refs against the witness policy.
-3. **Replace ref rejection**: Errors if any refs exist under `refs/replace/`. Replace refs allow transparent object substitution — any commit, tree, or blob can be silently swapped for a different object without changing the hashes that reference it. This breaks the Merkle chain property that git-ratchet relies on. Since replace refs are not fetched by default, their presence is treated as an integrity violation.
+Every git invocation passes `--no-replace-objects`, so refs under `refs/replace/` cannot substitute one object's content for another's during verification. What is checkpointed is the true object graph, and that is the graph verification reads.
 
 ### `cosign` (standalone binary)
 
@@ -146,10 +136,10 @@ Some repositories — particularly those with long histories stitched together f
 
 1. A branch (e.g. `_replace-log`) would contain a `replace-map` file listing every approved `<original-sha> <replacement-sha>` pair.
 2. This branch would be checkpointed and witnessed like any other branch, using forward-only ratchet semantics. The full history of replace ref additions, modifications, and deletions would be preserved as commits on this branch.
-3. `audit` would cross-reference the actual `refs/replace/*` state against the latest `replace-map`, erroring on any untracked, missing, or modified replace refs.
+3. `verify` would cross-reference the actual `refs/replace/*` state against the latest `replace-map`, erroring on any untracked, missing, or modified replace refs, and read through the approved ones rather than ignoring them as it does today.
 4. A `git-ratchet sync-replace` command would reconstruct local `refs/replace/*` from the tracking branch, sidestepping the fact that Git does not propagate replace refs by default.
 
-This would keep the witness role simple (it just enforces forward-only on a branch), keep the audit trail in the Git DAG (not in witness state), and provide a clear onboarding path for legacy repositories.
+This would keep the witness role simple (it just enforces forward-only on a branch), keep the record in the Git DAG (not in witness state), and provide a clear onboarding path for legacy repositories.
 
 ## Building
 
@@ -162,7 +152,7 @@ bazel build //witness/cosign
 
 ## Demo
 
-This section walks through the full end-to-end setup: provisioning an origin signing key, deploying a witness, writing a policy, and then checkpointing, verifying, and auditing a repository.
+This section walks through the full end-to-end setup: provisioning an origin signing key, deploying a witness, writing a policy, and then checkpointing and verifying a repository.
 
 ### 1. Provision an origin signing key
 
@@ -201,7 +191,7 @@ witness w1 https://git-ratchet-witness-xxxxxxxx-uc.a.run.app git-ratchet-witness
 quorum w1
 ```
 
-### 4. Checkpoint, verify, and audit
+### 4. Checkpoint and verify
 
 You can either build the binary once and run it directly, or use `bazel run` to build-and-run in a single step.
 
@@ -227,19 +217,12 @@ git cat-file -p refs/checkpoints/heads/main
 bazel run //:git-ratchet -- verify --policy $PWD/policy.txt --ref refs/heads/main
 ```
 
-**Audit** the full repository integrity (fsck + verify + replace-ref check):
-
-```bash
-bazel run //:git-ratchet -- audit --policy $PWD/policy.txt --ref refs/heads/main
-```
-
 Alternatively, build the binary once and invoke it directly:
 
 ```bash
 bazel build //:git-ratchet
 ./bazel-bin/git-ratchet_/git-ratchet checkpoint --ref refs/heads/main --kms-key "$KMS_KEY" --origin "$ORIGIN" --policy $PWD/policy.txt
 ./bazel-bin/git-ratchet_/git-ratchet verify --policy $PWD/policy.txt --ref refs/heads/main
-./bazel-bin/git-ratchet_/git-ratchet audit --policy $PWD/policy.txt --ref refs/heads/main
 ```
 
 ## Self-witnessing
