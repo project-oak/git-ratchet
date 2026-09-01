@@ -49,7 +49,7 @@ runs:
         fetch-depth: 0
 
     - name: Install git-ratchet
-      uses: project-oak/git-ratchet/actions/setup@07aa8aa0318cf87afc7d69ff4aaf5da5a856585d # v0.1.9
+      uses: project-oak/git-ratchet/actions/setup@dd5ec29512405226f6858958108040ab39458845 # v0.3.0
       with:
         tool: git-ratchet
         version: ${{ inputs.version }}
