@@ -12,33 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: 'git-ratchet checkpoint'
+
+name: 'git-ratchet log'
 description: >
-  Checkpoint the repository's transparency log: collect cosignatures from the
-  policy's witnesses, evaluate quorum, store the result, and push it. Refs are
-  recorded in the log by the log Action.
+  Record a ref's current object in the repository's transparency log, and push
+  the entry. Local: no key, and no witnesses are contacted.
 
 inputs:
-  origin-key:
-    description: 'Origin private key file contents, as written by genkey'
+  ref:
+    description: 'Full ref path to record (e.g. refs/heads/main)'
     required: true
-  policy:
-    description: 'Path to the witness policy file (relative to repo root)'
-    required: true
-  github-token:
-    description: >
-      GitHub token that can open issues on witness repositories, for
-      github-issue:// witnesses.
-    required: false
-    default: ${{ github.token }}
   version:
     description: 'git-ratchet version to install (e.g. "v0.1.0"). Defaults to latest.'
     required: false
     default: 'latest'
-  timeout:
-    description: 'Seconds to wait for each witness to cosign'
-    required: false
-    default: '300'
 
 runs:
   using: 'composite'
@@ -54,30 +41,17 @@ runs:
         tool: git-ratchet
         version: ${{ inputs.version }}
 
-    # A checkpoint covers what the log holds, so the log has to be present.
-    # It does not exist until something has been recorded in it.
+    # The log has to be present before a ref can be recorded in it. It does
+    # not exist on a first run.
     - name: Fetch log ref
       shell: bash
       run: git fetch origin 'refs/ratchet/log:refs/ratchet/log' 2>/dev/null || true
 
-    - name: Checkpoint the log
+    - name: Record the ref in the log
       shell: bash
-      env:
-        ORIGIN_KEY: ${{ inputs.origin-key }}
-        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
-      run: |
-        KEYFILE="${RUNNER_TEMP}/origin.key"
-        printf '%s\n' "$ORIGIN_KEY" > "$KEYFILE"
-        chmod 600 "$KEYFILE"
-        trap 'rm -f "$KEYFILE"' EXIT
+      run: git-ratchet log --ref "${{ inputs.ref }}"
 
-        git-ratchet checkpoint \
-          --key "$KEYFILE" \
-          --policy "${{ inputs.policy }}" \
-          --github-token "$GITHUB_TOKEN_INPUT" \
-          --witness-timeout "${{ inputs.timeout }}s"
-
-    - name: Push the checkpoint
+    - name: Push the log entry
       shell: bash
       # Not --force. Each log commit is parented on the one before, so an
       # ordinary push rejects a rewritten log before any git-ratchet code

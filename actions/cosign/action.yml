@@ -17,8 +17,6 @@ description: >
   Witness-side cosigning Action. Parses a checkpoint request from a GitHub
   Issue, verifies and cosigns it, commits the result, and replies to the
   issue. Must be called from a workflow triggered by issues:opened.
-  Witnesses tlog-checkpoints only; git-checkpoint mode reaches witnesses
-  over HTTP.
 
 inputs:
   witness-key:
