@@ -473,6 +473,51 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   margin-top: 8px;
   font-style: italic;
 }
+
+/* ---- Phone layer -------------------------------------------------------
+   Everything above is authored for a projector. These rules apply below
+   820px only, so the projected rendering is unaffected. */
+@media (max-width: 820px) {
+  /* Mobile browsers report 100vh as the height without the address bar, so a
+     100vh slide is taller than what is actually on screen. dvh tracks the
+     visible viewport; the vh line stays as the fallback. */
+  body { height: 100vh; height: 100dvh; }
+
+  .s { padding: 28px 20px 88px; }
+  /* Centring a slide taller than the viewport puts its top out of reach.
+     Start at the top and let it scroll instead. */
+  .s.active { justify-content: flex-start; }
+  .s.title-slide { justify-content: center; }
+
+  h1 { font-size: 2.4em; }
+  h2 { font-size: 1.5em; margin-bottom: 0.5em; }
+  h3 { font-size: 1.02em; }
+  p, li { font-size: 0.94em; line-height: 1.55; }
+  .sub { font-size: 1.05em; }
+
+  /* Side-by-side comparisons stack rather than shrink to unreadable columns. */
+  .two-col,
+  .card-grid.cols-2,
+  .card-grid.cols-3 { grid-template-columns: 1fr; gap: 14px; }
+  .invariant { flex-direction: column; gap: 12px; }
+  .flow { gap: 8px; }
+  .flow-arrow { transform: rotate(90deg); }
+
+  .card { padding: 16px; }
+  .threat-box, .safe-box { padding: 16px 18px; }
+  .code-block, .commit-obj { font-size: 0.72em; padding: 14px 16px; }
+
+  /* Touch targets, and room for them under the last line of content. */
+  nav { bottom: 16px; right: 16px; gap: 10px; }
+  nav button, button.home-btn { width: 46px; height: 46px; font-size: 1.2em; }
+  button.home-btn { bottom: 16px; left: 16px; }
+  .counter { bottom: 30px; right: 122px; }
+  .notes-panel { padding: 16px 20px; max-height: 45vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s, .progress, nav button, button.home-btn, .notes-panel { transition: none; }
+}
 </style>
 </head>
 <body>
@@ -492,7 +537,7 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   <div class="label">The Problem</div>
   <h2>The Gap in Git's Integrity Model</h2>
   <div class="card" style="margin-bottom: 20px; padding: 16px 24px; border-left: 3px solid var(--highlight);">
-    <p style="font-size: 0.92em;"><strong style="color: var(--highlight);">What is a Git ref?</strong> A named pointer in a key-value store — a name like <code>refs/heads/main</code> maps to an object hash. Branches, tags, and (as we'll see) checkpoints are all refs.</p>
+    <p style="font-size: 0.92em;"><strong style="color: var(--highlight);">What is a Git ref?</strong> A named pointer in a key-value store — a name like <code>refs/heads/main</code> maps to an object hash. Branches and tags are both refs.</p>
   </div>
   <div class="two-col">
     <div>
@@ -560,59 +605,63 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
 </div>
 
 <!-- Slide 3: What git-ratchet Does -->
-<div class="s" data-idx="3" data-notes="So what does git-ratchet do about this? It provides tamper-evidence for Git refs by introducing independent witnesses. The flow has three steps. &lt;br&gt;&lt;br&gt;First, after a push or tag creation, the origin signs a checkpoint — a cryptographic note binding the ref to the commit hash it currently points to. &lt;br&gt;&lt;br&gt;Second, independent witnesses verify the origin signature and enforce rules, then cosign the checkpoint. For branches, the rule is that the new commit must be a descendant of the last cosigned commit — a forward-only ratchet. For tags, the rule is simpler: once witnessed, a tag is pinned to its hash forever. &lt;br&gt;&lt;br&gt;Third, anyone can verify the checkpoint — check the signatures against a policy, confirm the ref still matches. If something doesn't add up, you know tampering has occurred.">
+<div class="s" data-idx="3" data-notes="So what does git-ratchet do about this? It keeps a transparency log of the repository&#39;s own ref updates, inside the repository, and has independent witnesses cosign that the log only ever grew by appending. &lt;br&gt;&lt;br&gt;There are three steps. First, after a push or a tag, git-ratchet log appends an entry recording which object the ref points at. That is local — no key, no network. &lt;br&gt;&lt;br&gt;Second, git-ratchet checkpoint signs the log&#39;s head and asks the policy&#39;s witnesses to cosign it. What they attest is narrow: that this tree is an append-only extension of the one they last saw. They never see a ref. &lt;br&gt;&lt;br&gt;Third, anyone runs git-ratchet verify, which checks those signatures and then walks the logged entries for a ref. &lt;br&gt;&lt;br&gt;The two invariants at the bottom are the point of the whole system, and it matters where they are enforced: not at the witness, but at verification. A witness cannot tell a fast-forward from a rollback. What it guarantees is that a rollback, once recorded, cannot be quietly removed — which is what makes verify able to catch it.">
   <div class="label">Overview</div>
   <h2>What git-ratchet Does</h2>
   <div class="flow">
     <div class="flow-item" style="border-color: var(--primary);">
       <div style="font-size: 1.5em; margin-bottom: 6px;">📝</div>
-      <h3>Checkpoint</h3>
-      <p class="small">Origin signs a note:<br>ref → commit hash</p>
+      <h3>Log</h3>
+      <p class="small">Append an entry:<br>ref &#8594; object hash</p>
     </div>
-    <div class="flow-arrow">→</div>
+    <div class="flow-arrow">&#8594;</div>
     <div class="flow-item" style="border-color: var(--accent);">
       <div style="font-size: 1.5em; margin-bottom: 6px;">👁️</div>
-      <h3>Witness</h3>
-      <p class="small">Independent parties<br>verify &amp; cosign</p>
+      <h3>Checkpoint</h3>
+      <p class="small">Witnesses cosign<br>the log grew by appending</p>
     </div>
-    <div class="flow-arrow">→</div>
+    <div class="flow-arrow">&#8594;</div>
     <div class="flow-item" style="border-color: var(--highlight);">
       <div style="font-size: 1.5em; margin-bottom: 6px;">✓</div>
       <h3>Verify</h3>
-      <p class="small">Anyone checks<br>signatures + ref state</p>
+      <p class="small">Anyone walks<br>the witnessed log</p>
     </div>
   </div>
   <div class="invariant">
     <div class="invariant-item branch">
       <h3 style="color: var(--primary);">Branches: forward-only ratchet</h3>
-      <p>New commit must descend from the last cosigned commit. History can only move forward.</p>
+      <p>Every logged state must descend from the one before it. History can only move forward.</p>
     </div>
     <div class="invariant-item tag-inv">
       <h3 style="color: var(--accent);">Tags: immutable pin</h3>
-      <p>Once witnessed, a tag is pinned to its object hash forever. Any move is rejected.</p>
+      <p>Once logged, a tag is pinned to its object hash. A second object for the same tag is rejected.</p>
     </div>
   </div>
+  <p class="small" style="margin-top: 14px; color: var(--text-muted);">Both invariants are enforced at <strong>verification</strong>, not by the witness &#8212; see slide 8.</p>
 </div>
+
 
 <!-- Slide 4: Checkpoint Format -->
-<div class="s" data-idx="4" data-notes="Let's look at what a checkpoint actually is. It's a C2SP signed note — a simple, well-specified format. The body is just two lines: the origin identity plus the ref path, and the object hash. &lt;br&gt;&lt;br&gt;The origin signs this using Ed25519 or ML-DSA-44 — we support post-quantum signatures. Then each witness appends a cosignature line. &lt;br&gt;&lt;br&gt;Currently we store checkpoints as Git refs — at paths like refs/checkpoints/heads/main. This is convenient because it keeps them in the repository itself without needing a commit, and they travel with fetch and push. But this is just a storage choice. The trust comes entirely from the signatures, not from where the checkpoint lives. You could store them in a database, a file, a transparency log — anywhere. The signatures are what matter. &lt;br&gt;&lt;br&gt;The format itself is intentionally minimal. It's human-readable, easy to parse, and the cryptographic properties come from the C2SP specifications — the same format used by Go's module transparency log, Sigsum, and other transparency systems.">
+<div class="s" data-idx="4" data-notes="Let&#39;s look at what a checkpoint actually is. It is a C2SP tlog-checkpoint — the same object Go&#39;s module transparency log and Sigsum use. The body is three lines: the log&#39;s origin, the number of entries, and the Merkle root hash over all of them. &lt;br&gt;&lt;br&gt;The origin signs it with Ed25519 or ML-DSA-44 — we support post-quantum signatures — and each witness appends a cosignature. &lt;br&gt;&lt;br&gt;Notice what is not here. There is no ref path and no commit hash. Nothing Git-specific at all. That is deliberate: it means any witness implementing the C2SP tlog-witness protocol can cosign a git-ratchet checkpoint without knowing what Git is, so we are not asking anyone to run software of ours. The security of a ratchet rests on witness diversity, and a bespoke protocol is an obstacle to it. &lt;br&gt;&lt;br&gt;It also means a private repository can use public witnesses without disclosing anything about its contents. The refs themselves live in the log&#39;s entries, which stay in the repository.">
   <div class="label">Format</div>
   <h2>Checkpoint Format</h2>
-  <p style="margin-bottom: 12px;">A <a href="https://c2sp.org/signed-note" style="color: var(--accent);">C2SP signed note</a> binding a ref to a commit hash:</p>
-  <div class="code-block"><span class="comment">// Body: origin + refpath, then object hash</span>
-<span class="key">github.com/example/repo</span> <span class="val">refs/heads/main</span>
-<span class="str">4f0f30afb02b71590f0b2e0a67f0b846715e1d04</span>
+  <p style="margin-bottom: 12px;">A <a href="https://c2sp.org/tlog-checkpoint" style="color: var(--accent);">C2SP tlog-checkpoint</a> over the log &#8212; not over any one ref:</p>
+  <div class="code-block"><span class="comment">// Body: origin, tree size, Merkle root hash</span>
+<span class="key">github.com/example/repo</span>
+<span class="val">42</span>
+<span class="str">Ux7DqA1kLZ0mJt9vQhBZ3nR8sYcW2FpKdE6TgNvXjHo=</span>
 
-<span class="comment">// Origin signature (Ed25519 or ML-DSA-44)</span>
-<span class="sig">— example-origin+a1b2c3d4 &lt;base64 signature&gt;</span>
+<span class="comment">// Log signature (Ed25519 or ML-DSA-44)</span>
+<span class="sig">&#8212; example-origin+a1b2c3d4 &lt;base64 signature&gt;</span>
 <span class="comment">// Witness cosignature(s)</span>
-<span class="sig">— witness1+e5f6a7b8 &lt;base64 cosignature&gt;</span>
-<span class="sig">— witness2+c9d0e1f2 &lt;base64 cosignature&gt;</span></div>
-  <p class="small">Stored as Git refs (<code>refs/checkpoints/…</code>) for convenience — but checkpoints could live anywhere. The trust comes from the signatures, not the storage location.</p>
+<span class="sig">&#8212; witness1+e5f6a7b8 &lt;base64 cosignature&gt;</span>
+<span class="sig">&#8212; witness2+c9d0e1f2 &lt;base64 cosignature&gt;</span></div>
+  <p class="small">No ref path, no commit hash, <strong>nothing Git-specific</strong> &#8212; so any <a href="https://c2sp.org/tlog-witness" style="color: var(--accent);">tlog-witness</a> implementation can cosign one. The refs live in the log&#39;s entries, which stay in the repository.</p>
 </div>
 
+
 <!-- Slide 5: How Commit Hashes Work -->
-<div class="s" data-idx="5" data-notes="Before we talk about how witnesses verify things without cloning the repo, we need to understand how Git commit hashes are formed — because this is the property that makes the whole system work. &lt;br&gt;&lt;br&gt;A commit SHA is the hash of the commit object body. That body contains: the tree hash — which covers every file path and blob — the parent commit hash or hashes, the author, committer, and message. Critically, the parent hashes are themselves computed the same way. &lt;br&gt;&lt;br&gt;This means each commit hash transitively covers the entire history below it. It's a Merkle chain. And the key insight for git-ratchet is that each commit object is self-authenticating: if someone gives you the raw bytes of a commit object, you can independently compute its hash and verify it. You don't need to trust the sender. This is what makes ancestry proofs possible.">
+<div class="s" data-idx="5" data-notes="Before we get to how the ratchet is checked, we need to understand how Git commit hashes are formed — because this is the property that makes the whole system work. &lt;br&gt;&lt;br&gt;A commit SHA is the hash of the commit object body. That body contains: the tree hash — which covers every file path and blob — the parent commit hash or hashes, the author, committer, and message. Critically, the parent hashes are themselves computed the same way. &lt;br&gt;&lt;br&gt;This means each commit hash transitively covers the entire history below it. It's a Merkle chain. And the key insight for git-ratchet is that each commit object is self-authenticating: if someone gives you the raw bytes of a commit object, you can independently compute its hash and verify it. You do not need to trust the sender, and you do not need anything the repository does not already have. This is what lets verify establish descent for itself, on the next slide.">
   <div class="label">Foundations</div>
   <h2>How Commit Hashes Work</h2>
   <div class="two-col">
@@ -648,114 +697,117 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   </div>
 </div>
 
-<!-- Slide 6: Ancestry Proofs -->
-<div class="s" data-idx="6" data-notes="So how does a witness verify that a new commit descends from the previously cosigned one — without cloning the repository? &lt;br&gt;&lt;br&gt;The checkpoint request includes the raw commit objects forming a chain from the new commit back to the last cosigned commit. The witness hashes each object to compute its commit hash, then checks that each commit's parent field matches the hash of the next object in the chain. If the chain is valid, the new commit provably descends from the old one. &lt;br&gt;&lt;br&gt;For merge commits, only the parent on the path back to the old commit is needed — you don't need the full graph, just a single path. &lt;br&gt;&lt;br&gt;This is elegant because the witness never needs to clone or fetch from the repository. It's pure hash verification on self-authenticating objects. The witness can run completely independently — no network access to the origin repo required.">
+<!-- Slide 6: Where the Ratchet Is Enforced -->
+<div class="s" data-idx="6" data-notes="So if the witness never sees a ref, who enforces the ratchet? Verification does, and it does it locally. &lt;br&gt;&lt;br&gt;The log holds a sequence of states for each ref. verify walks that sequence and checks that each one descends from the one before, using the property from the previous slide: commit hashes are self-authenticating, so the repository can prove descent to itself. That is a handful of local merge-base calls with nothing to fetch. &lt;br&gt;&lt;br&gt;The important word is always. verify must do this on every run. It cannot know whether anything checked the log before it, and an attacker who wrote to the log ref directly certainly did not. So the rule holds on its own rather than resting on what some earlier command is assumed to have done. &lt;br&gt;&lt;br&gt;This is the trade the whole design makes. We give up the witness refusing a rollback at cosigning time, and in exchange the witness becomes something anybody already runs. The rollback is still caught — one step later, by whoever verifies.">
   <div class="label">Key Mechanism</div>
-  <h2>Ancestry Proofs</h2>
-  <p style="margin-bottom: 16px;">Witnesses verify descent <strong>without cloning the repo</strong>.</p>
+  <h2>Where the Ratchet Is Enforced</h2>
+  <p style="margin-bottom: 16px;">The witness attests <strong>append-only growth</strong>. <code>verify</code> establishes <strong>descent</strong> &#8212; locally.</p>
   <div class="card" style="padding: 28px; margin-bottom: 16px;">
     <div style="display: flex; align-items: center; gap: 16px; justify-content: center; flex-wrap: wrap;">
       <div style="text-align: center; padding: 12px 18px; background: var(--primary-dim); border-radius: var(--radius); border: 1px solid rgba(74,222,128,0.2);">
-        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--primary);">new commit</div>
+        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--primary);">latest logged</div>
         <div style="font-family: var(--mono); font-size: 0.75em; color: var(--text-muted);">e4d9a1...</div>
       </div>
-      <div style="color: var(--text-muted); font-size: 1.2em;">→</div>
+      <div style="color: var(--text-muted); font-size: 1.2em;">&#8594;</div>
       <div style="text-align: center; padding: 12px 18px; background: var(--surface-alt); border-radius: var(--radius); border: 1px solid var(--border);">
-        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--text-secondary);">commit</div>
+        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--text-secondary);">logged state</div>
         <div style="font-family: var(--mono); font-size: 0.75em; color: var(--text-muted);">b7c1f3...</div>
       </div>
-      <div style="color: var(--text-muted); font-size: 1.2em;">→</div>
+      <div style="color: var(--text-muted); font-size: 1.2em;">&#8594;</div>
       <div style="text-align: center; padding: 12px 18px; background: var(--surface-alt); border-radius: var(--radius); border: 1px solid var(--border);">
-        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--text-secondary);">commit</div>
+        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--text-secondary);">logged state</div>
         <div style="font-family: var(--mono); font-size: 0.75em; color: var(--text-muted);">93ae02...</div>
       </div>
-      <div style="color: var(--text-muted); font-size: 1.2em;">→</div>
+      <div style="color: var(--text-muted); font-size: 1.2em;">&#8594;</div>
       <div style="text-align: center; padding: 12px 18px; background: var(--accent-dim); border-radius: var(--radius); border: 1px solid rgba(96,165,250,0.2);">
-        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--accent);">last cosigned</div>
+        <div style="font-family: var(--mono); font-size: 0.85em; color: var(--accent);">first logged</div>
         <div style="font-family: var(--mono); font-size: 0.75em; color: var(--text-muted);">a0ff87...</div>
       </div>
     </div>
   </div>
   <div class="card-grid cols-3">
     <div class="card green">
-      <h3>Hash each object</h3>
-      <p class="small">Compute the SHA from the raw bytes — verify it matches the claimed hash</p>
+      <h3>Walk the logged states</h3>
+      <p class="small">Each must descend from the one before &#8212; local <code>merge-base</code> calls, nothing to fetch</p>
     </div>
     <div class="card green">
-      <h3>Verify parent linkage</h3>
-      <p class="small">Each commit's <code>parent</code> field must match the hash of the next object in the chain</p>
+      <h3>Objects prove themselves</h3>
+      <p class="small">Commit hashes cover their parents, so the repository can establish descent to itself</p>
     </div>
     <div class="card green">
-      <h3>No clone needed</h3>
-      <p class="small">Pure hash verification on self-authenticating objects — the witness runs independently</p>
+      <h3>Always, never assumed</h3>
+      <p class="small">A verifier cannot know whether anything checked the log first &#8212; an attacker writing to the log ref did not</p>
     </div>
   </div>
 </div>
 
+
 <!-- Slide 7: Witness Implementations -->
-<div class="s" data-idx="7" data-notes="git-ratchet supports two witness implementations. &lt;br&gt;&lt;br&gt;The first is an HTTP witness — a standalone server you deploy, for example on Cloud Run. It receives checkpoint requests over HTTP, verifies them, and returns cosignatures in real time. Low latency, but you need to run infrastructure. &lt;br&gt;&lt;br&gt;The second is the GitHub Issue witness — and this is git-witness. It requires zero infrastructure. The origin creates a GitHub Issue on the witness repo containing the checkpoint request. A GitHub Actions workflow picks it up, verifies the request, cosigns it, posts the cosignature as a comment, and closes the issue. The witness state — every cosigned checkpoint — is committed to the witness repo, so you get a full audit trail in Git. &lt;br&gt;&lt;br&gt;git-ratchet itself uses a GitHub Issue witness to protect its own main branch and release tags.">
+<div class="s" data-idx="7" data-notes="git-ratchet talks to two kinds of witness, and reaches both itself. &lt;br&gt;&lt;br&gt;The first is any witness already speaking C2SP tlog-witness over HTTP. That is the payoff from the format slide: because our checkpoint has no Git-specific fields, we are not asking anyone to deploy software of ours. We use transparency-dev&#39;s client, and the tests run against their witness implementation — if both halves were ours, a mistake in one could agree with the same mistake in the other. &lt;br&gt;&lt;br&gt;The second is the GitHub Issue witness, which is git-witness. Zero infrastructure: the origin opens an issue containing the request, an Actions workflow cosigns it and replies in a comment, and the witness state is committed to the witness repository so the audit trail is the Git history. &lt;br&gt;&lt;br&gt;Both carry exactly the same protocol. The request and the response are HTTP messages either way — the issue and the comment just replace the POST and its reply. A witness reached that way answers exactly as an HTTP one would, because behind the transport it runs the same handler.">
   <div class="label">Implementations</div>
   <h2>Witness Types</h2>
   <div class="card-grid cols-2" style="margin-top: 8px;">
     <div class="card blue" style="display: flex; flex-direction: column;">
       <span class="badge blue" style="align-self: flex-start; margin-bottom: 12px;">HTTP Witness</span>
-      <h3>Standalone server</h3>
+      <h3>Any witness on the existing network</h3>
       <ul>
-        <li>Deploy on Cloud Run, Kubernetes, etc.</li>
-        <li>Real-time cosigning via HTTP</li>
+        <li>Speaks <a href="https://c2sp.org/tlog-witness" style="color: var(--accent);">C2SP tlog-witness</a> &#8212; nothing of ours to deploy</li>
+        <li>Real-time cosigning via HTTP POST</li>
         <li>Low latency (~ms)</li>
-        <li>State stored in the server's backing store</li>
+        <li>Client is <strong>transparency-dev&#39;s</strong>, tested against their witness</li>
       </ul>
-      <p class="small" style="margin-top: auto; padding-top: 12px; color: var(--text-muted);">Best for: high-throughput, automated pipelines</p>
+      <p class="small" style="margin-top: auto; padding-top: 12px; color: var(--text-muted);">Best for: witness diversity, automated pipelines</p>
     </div>
     <div class="card green" style="display: flex; flex-direction: column;">
       <span class="badge green" style="align-self: flex-start; margin-bottom: 12px;">GitHub Issue Witness</span>
       <h3>Zero infrastructure (git-witness)</h3>
       <ul>
-        <li>Origin opens an Issue with the checkpoint request</li>
-        <li>Actions workflow cosigns + posts cosignature</li>
+        <li>Origin opens an Issue carrying the request</li>
+        <li>Actions workflow cosigns + replies in a comment</li>
         <li>State <strong>committed to the witness repo</strong></li>
         <li>Full audit trail in Git history</li>
       </ul>
       <p class="small" style="margin-top: auto; padding-top: 12px; color: var(--text-muted);">Best for: open-source projects, getting started</p>
     </div>
   </div>
+  <p class="small" style="margin-top: 14px; color: var(--text-muted);">Same protocol either way: request and response are HTTP messages, and an issue plus a comment simply replace the POST and its reply.</p>
 </div>
 
+
 <!-- Slide 8: Verification -->
-<div class="s" data-idx="8" data-notes="So what does verification actually mean? git-ratchet verify answers a specific question: has this ref been tampered with since it was last witnessed? &lt;br&gt;&lt;br&gt;It fetches the checkpoint ref, verifies the origin and witness signatures against a policy file, and confirms that the live ref still points at the checkpointed commit. &lt;br&gt;&lt;br&gt;The policy file is the trust anchor. It specifies which origin key is trusted, which witness keys are trusted, and a quorum — how many witnesses must have cosigned for the checkpoint to be considered valid. For example, you might require two out of three witnesses. &lt;br&gt;&lt;br&gt;If any signature is invalid, or the ref has moved past the checkpoint, or the quorum isn't met — verification fails, and you know something is wrong. The key point is that anyone can run this. You don't need any special access or credentials — just the policy file and a clone of the repo.">
+<div class="s" data-idx="8" data-notes="So what does verification actually mean? git-ratchet verify answers a specific question: is this ref covered by a log that a quorum of witnesses has attested to, and does the log say history only moved forward? &lt;br&gt;&lt;br&gt;Four steps. Read the log&#39;s stored checkpoint. Check the log&#39;s own signature and the witness cosignatures against the policy, including the quorum rule — two of three, say. Walk the logged entries for the ref, which is the ratchet from slide 6. And confirm the live ref is not ahead of what the log covers: commits beyond that are unwitnessed and could be removed without evidence. &lt;br&gt;&lt;br&gt;One subtlety worth stating. Only the part of the log the checkpoint covers is read. Entries appended since the last cosigned checkpoint are not yet witnessed, so nothing verifies against them — they are covered by the next checkpoint. &lt;br&gt;&lt;br&gt;The policy file is the trust anchor, and it is the C2SP tlog-policy format rather than anything of ours. Anyone can run this: it needs the policy and a clone, and no special access.">
   <div class="label">Verification</div>
   <h2>What Does Verification Mean?</h2>
-  <p style="margin-bottom: 16px;"><code>git-ratchet verify</code> answers: <strong>has this ref been tampered with since it was last witnessed?</strong></p>
+  <p style="margin-bottom: 16px;"><code>git-ratchet verify</code> answers: <strong>is this ref covered by a witnessed log that only moved forward?</strong></p>
   <div class="two-col">
     <div>
       <div class="step-list">
         <div class="step">
           <div class="step-num">1</div>
           <div class="step-content">
-            <h3>Fetch the checkpoint</h3>
-            <p class="small">Read the signed note from <code>refs/checkpoints/…</code></p>
+            <h3>Read the checkpoint</h3>
+            <p class="small">The log&#39;s stored checkpoint, from <code>refs/ratchet/log</code></p>
           </div>
         </div>
         <div class="step">
           <div class="step-num">2</div>
           <div class="step-content">
-            <h3>Verify signatures</h3>
-            <p class="small">Check origin + witness signatures against the <strong>policy</strong></p>
+            <h3>Verify signatures + quorum</h3>
+            <p class="small">Log signature and witness cosignatures against the <strong>policy</strong> (e.g. 2 of 3)</p>
           </div>
         </div>
         <div class="step">
           <div class="step-num">3</div>
           <div class="step-content">
-            <h3>Check quorum</h3>
-            <p class="small">Enough witnesses cosigned? (e.g. 2 of 3)</p>
+            <h3>Walk the logged entries</h3>
+            <p class="small">Each state descends from the last; no tag logged at a second object</p>
           </div>
         </div>
         <div class="step">
           <div class="step-num">4</div>
           <div class="step-content">
             <h3>Confirm ref state</h3>
-            <p class="small">Live ref still matches the checkpointed commit</p>
+            <p class="small">Live ref is not <strong>ahead</strong> of what the log covers</p>
           </div>
         </div>
       </div>
@@ -766,29 +818,31 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   --ref refs/heads/main</div>
       <div class="safe-box">
         <h3 style="color: var(--primary); margin-bottom: 6px;">Anyone can verify</h3>
-        <p style="font-size: 0.9em;">No special access needed — just the policy file and a clone of the repo.</p>
+        <p style="font-size: 0.9em;">No special access needed &#8212; just the policy file and a clone of the repo.</p>
       </div>
       <div class="card" style="margin-top: 12px; border-left: 3px solid var(--highlight); padding: 16px 20px;">
-        <h3 style="color: var(--highlight); font-size: 0.95em;">The policy is the trust anchor</h3>
-        <p class="small">Specifies which origin key, which witness keys, and the quorum requirement.</p>
+        <h3 style="color: var(--highlight); font-size: 0.95em;">Only the witnessed prefix counts</h3>
+        <p class="small">Entries appended past the last cosigned checkpoint are not yet witnessed &#8212; the next checkpoint covers them.</p>
       </div>
     </div>
   </div>
 </div>
 
+
 <!-- Slide 9: Self-Witnessing & Getting Started -->
-<div class="s" data-idx="9" data-notes="git-ratchet uses itself to protect its own main branch and release tags. Every push to main and every v-star tag triggers the checkpoint workflow, which submits to a GitHub Issue witness at BenBirt/git-witness. Anyone can verify this — the policy file is committed to the repo. &lt;br&gt;&lt;br&gt;For getting started in your own project, there are three composite GitHub Actions: setup installs the binary, checkpoint runs the origin side, and cosign runs the witness side. You write a policy file that ties together your origin key, witness keys, and quorum requirement. The whole thing can be set up in under an hour.">
+<div class="s" data-idx="9" data-notes="git-ratchet uses itself to protect its own main branch and release tags. Every push to main and every v-star tag records the ref in the log and then checkpoints it against the GitHub Issue witness at BenBirt/git-witness. Anyone can check that — the policy file is committed to the repository. &lt;br&gt;&lt;br&gt;For your own project there are four composite Actions. setup installs the binary. log records a ref and pushes the entry. checkpoint gets the log&#39;s head cosigned. cosign is the witness side, for whoever runs the witness repository. &lt;br&gt;&lt;br&gt;Logging and checkpointing are deliberately separate Actions, and that is not just tidiness. The entry is the durable record of where the ref pointed, and it is pushed before anyone is asked to cosign it — so a witness that is down, slow, or refusing cannot cost you the record. The next checkpoint covers whatever the log holds by then. &lt;br&gt;&lt;br&gt;It also means you can log on every push and checkpoint on a schedule: the ref record stays prompt while witnesses are asked for far fewer signatures.">
   <div class="label">In Practice</div>
   <h2>Self-Witnessing &amp; Getting Started</h2>
   <div class="two-col">
     <div>
       <div class="safe-box">
         <h3 style="color: var(--primary); margin-bottom: 8px;">🔄 git-ratchet protects itself</h3>
-        <p style="font-size: 0.92em;">Every push to <code>main</code> and every <code>v*</code> tag triggers the checkpoint workflow → GitHub Issue witness at <strong>BenBirt/git-witness</strong></p>
+        <p style="font-size: 0.92em;">Every push to <code>main</code> and every <code>v*</code> tag logs the ref, then checkpoints the log &#8594; GitHub Issue witness at <strong>BenBirt/git-witness</strong></p>
         <div class="code-block" style="font-size: 0.78em; margin-top: 12px; margin-bottom: 0;">git-ratchet verify \
   --policy ratchet-checkpoint.policy \
   --ref refs/heads/main</div>
       </div>
+      <p class="small" style="margin-top: 12px; color: var(--text-muted);">Logging and checkpointing are separate on purpose: the entry is pushed <strong>before</strong> anyone is asked to cosign it, so a witness being down cannot cost you the record.</p>
     </div>
     <div>
       <h3 style="margin-bottom: 12px;">GitHub Actions</h3>
@@ -803,21 +857,29 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
         <div class="step">
           <div class="step-num">2</div>
           <div class="step-content">
-            <h3><code>actions/checkpoint</code></h3>
-            <p class="small">Origin-side: sign, submit, assemble, push</p>
+            <h3><code>actions/log</code></h3>
+            <p class="small">Origin-side: record a ref, push the entry</p>
           </div>
         </div>
         <div class="step">
           <div class="step-num">3</div>
           <div class="step-content">
+            <h3><code>actions/checkpoint</code></h3>
+            <p class="small">Origin-side: get the log&#39;s head cosigned, push it</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-content">
             <h3><code>actions/cosign</code></h3>
-            <p class="small">Witness-side: verify &amp; cosign</p>
+            <p class="small">Witness-side: answer an add-checkpoint request</p>
           </div>
         </div>
       </div>
     </div>
   </div>
 </div>
+
 
 <!-- Slide 10: Future Directions -->
 <div class="s" data-idx="10" data-notes="The pattern here — independent witnesses enforcing forward-only or immutable semantics on mutable pointers — generalises well beyond Git. &lt;br&gt;&lt;br&gt;Package registries have the same problem: a published version can be silently replaced or yanked. Witnessed checkpoints could pin package versions with the same guarantees. &lt;br&gt;&lt;br&gt;Build systems like Bazel fetch modules by URL and hash — but the resolution from version to URL happens in a mutable registry. Integrating witness verification into that resolution step would close the gap. &lt;br&gt;&lt;br&gt;More broadly, any system with a mutable pointer to immutable content — which is most of software distribution — could benefit from this pattern. The core idea is simple: separate the entity that publishes from the entities that attest, and make the attestation chain append-only.">
