@@ -490,7 +490,7 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
 </div>
 
 <!-- Slide 1: Threat Model -->
-<div class="s" data-idx="1" data-notes="Let's start with the threat model. In Git, commits form a content-addressed Merkle DAG: if you already hold a trusted commit hash, you can verify the entire history below it. But downstream consumers — developers, CI pipelines, package managers — often depend on a branch name like main or a release tag like v2.1.0. And in Git, branches and tags are just mutable pointers living outside the DAG. || Assume an attacker with the ability to rewrite Git history — whether via a compromised maintainer key, a stolen CI credential, or a malicious Git host. In standard Git, that attacker exposes dependents to two problems. || First: silent modification and cover-up. The attacker moves a release tag or pushes a backdoored commit to main, waits for victims to pull, and then force-pushes main or moves the tag back to the clean commit. Once the old objects are garbage-collected, Git has zero cryptographic evidence the ref ever pointed anywhere else. || Second: split-views. A compromised server can serve the malicious ref to one target while serving the clean repository to everyone else. || git-ratchet's goal is to close both gaps: every ref state is recorded in an append-only log inside the repository, witnesses prevent split-views on that log, and verifiers enforce that branches only ever fast-forward and tags never move. Note the explicit non-goal: like Certificate Transparency, git-ratchet doesn't stop a compromised origin from making a valid forward commit — it ensures that doing so is permanently recorded and can never be scrubbed afterwards.">
+<div class="s" data-idx="1" data-notes="Let's start with the threat model. In Git, commits form a content-addressed Merkle DAG: if you already hold a trusted commit hash, you can verify the entire history below it. But downstream consumers — developers, CI pipelines, package managers — often depend on a branch name like main or a release tag like v2.1.0. And in Git, branches and tags are just mutable pointers living outside the DAG. || Assume an attacker with the ability to rewrite Git history — whether via a compromised maintainer key, a stolen CI credential, or a malicious Git host. In standard Git, that attacker exposes dependents to two problems. || First: silent modification and cover-up. The attacker moves a release tag or pushes a backdoored commit to main, waits for victims to pull, and then force-pushes main or moves the tag back to the clean commit. Once the old objects are garbage-collected, Git has zero cryptographic evidence the ref ever pointed anywhere else. || Second: split-views. A compromised server can serve the malicious ref to one target while serving the clean repository to everyone else. || git-ratchet's goal is to close both gaps: every ref state is recorded in an append-only log inside the repository, witnesses prevent split-views on that log, and verifiers enforce that branches only ever fast-forward and tags never move. And just like Certificate Transparency, attacks are still possible — a compromised origin can still push a bad fast-forward commit — but they cannot be hidden afterwards.">
   <div class="label">Threat Model</div>
   <h2>Git's Integrity Gap &amp; Threat Model</h2>
   <p>
@@ -502,9 +502,9 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
       <span class="badge red" style="margin-bottom: 10px;">Without git-ratchet</span>
       <h3>How Standard Git Is Vulnerable</h3>
       <ul>
-        <li><strong>Refs live outside the Merkle DAG:</strong> Commits are self-authenticating <em>given a trusted hash</em>, but branches (<code>refs/heads/*</code>) and tags (<code>refs/tags/*</code>) are mutable pointers.</li>
-        <li><strong>1. Silent modification &amp; cover-up:</strong> Attacker moves a release tag or pushes a backdoor, waits for victims to pull, then force-pushes or moves the tag back. Once GC runs, <strong>all evidence is scrubbed</strong>.</li>
-        <li><strong>2. Split-view attacks:</strong> A compromised host serves a tampered branch or tag to targeted consumers while showing a clean repo to everyone else.</li>
+        <li><strong>Refs are mutable pointers — don't trust them:</strong> Branches (<code>main</code>) and tags (<code>v2.1.0</code>) can be repointed at any time without leaving a trace.</li>
+        <li><strong>1. Silent modification &amp; cover-up:</strong> Force-push a backdoor or move a tag, let victims pull, then move it back—once GC runs, <strong>all evidence is gone</strong>.</li>
+        <li><strong>2. Split-view attacks:</strong> A compromised host serves a tampered branch or tag to one target while showing a clean repo to everyone else.</li>
       </ul>
     </div>
 
@@ -520,7 +520,7 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   </div>
 
   <div class="card amber" style="margin-top: 18px; padding: 16px 24px;">
-    <p><strong style="color: var(--highlight);">Explicit Non-Goal:</strong> Stopping a compromised origin from pushing a fast-forward bad commit — instead, like Certificate Transparency, <code>git-ratchet</code> ensures that doing so is <strong>permanent and undeniable</strong>.</p>
+    <p><strong style="color: var(--highlight);">Like Certificate Transparency:</strong> Attacks (such as pushing a bad commit) are still possible — <strong>but they cannot be hidden afterwards</strong>.</p>
   </div>
 </div>
 
@@ -569,19 +569,19 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
 </div>
 
 <!-- Slide 3: Division of Labour (Where the Ratchet is Enforced) -->
-<div class="s" data-idx="3" data-notes="That raises the central question: if the witness only sees tree heads and never sees a Git ref or commit hash, where is the forward-only ratchet actually enforced? || The answer is a division of labour between the witness and the downstream verifier (git-ratchet verify). || First: what does the witness do? A witness only checks that the log grew by appending. In fact, a witness WILL cosign a log entry that records a rollback, because appending a new entry is a valid Merkle tree extension. What the witness guarantees is that once a commit is recorded in the log, that log entry can never be removed. || Second: git-ratchet verify enforces the ratchet locally. When a relying party runs git-ratchet verify, it checks the checkpoint against the tlog-policy, takes only the witnessed prefix [0, size), and walks every ref-record entry for that ref from the beginning of the log. Because Git commits are a self-authenticating Merkle chain already present in the clone, git-ratchet verify checks the local commit graph to prove each logged commit descends from the previous one, and that the live ref is not ahead of the log. || Why must git-ratchet verify walk the full log history for the ref rather than just checking the latest entry? Because an attacker who can rewrite Git history can also append malicious rollback entries to the log itself — and witnesses will cosign them. Walking the full log history catches any non-fast-forward transition or tag move inside the log. || Finally, logging typed statements to a t-log — rather than hardcoding Git ancestry into witnesses — opens the door down the line to recorded history rewrites, such as when a court order requires excising sensitive content from history. That doesn't exist yet, in part because it takes very careful thought to get the policy and authorisation model right.">
-  <div class="label">Security Properties</div>
-  <h2>Where the Ratchet Is Enforced: Witnesses vs. <code>git-ratchet verify</code></h2>
-  <p>We trade refusal-at-cosigning-time for <strong>universal witness compatibility</strong>—without weakening tamper-evidence:</p>
+<div class="s" data-idx="3" data-notes="That raises the key question: if the witness only sees Merkle roots and never sees a Git ref or commit hash, how is the forward-only ratchet enforced? || The answer is a clean separation of concerns between standard C2SP witnesses and the downstream verifier (git-ratchet verify). || First: witnesses enforce append-only history and split-view resistance. A witness only checks that the log grew by appending — so once a commit is recorded in the log, that log entry is locked into the witnessed prefix [0, size) and can never be erased. || Second: git-ratchet verify enforces Git graph rules over that witnessed log. When a relying party runs git-ratchet verify, it verifies the checkpoint against the tlog-policy, reads the witnessed prefix [0, size), and walks every ref-record entry for the requested ref from entry 0, checking the local commit graph to prove that branches only fast-forward and tags never move. || Why walk from entry 0 rather than only checking the latest entry? Because an attacker can also append a rollback entry to the log itself — and a Git-agnostic witness will cosign it. Walking the full log history catches any non-fast-forward transition or tag move inside the log immediately. || And as a bonus, logging typed statements to a t-log opens the door in the future to policy-authorized history rewrites — such as court-ordered removals — without modifying witness software.">
+  <div class="label">Separation of Concerns</div>
+  <h2>How the Ratchet Works: Witnesses vs. <code>git-ratchet verify</code></h2>
+  <p>Standard witnesses enforce <strong>append-only history</strong>; the client verifier enforces <strong>Git graph rules</strong> over that history:</p>
 
   <div class="invariant">
     <div class="invariant-item tag-inv">
-      <h3 style="color: var(--accent);">1. Witnesses Attest Append-Only Growth</h3>
-      <p>A witness sees only <code>(origin, size, root_hash)</code> and an RFC 6962 consistency proof. <strong>A witness will cosign a rollback</strong>—and by doing so, locks that entry into the witnessed prefix <code>[0, size)</code> permanently.</p>
+      <h3 style="color: var(--accent);">1. Witnesses: Append-Only Log &amp; No Split Views</h3>
+      <p>Witnesses stay 100% Git-agnostic: they verify RFC 6962 consistency proofs so <strong>no logged ref entry can ever be erased or forked</strong>, and attach timestamped cosignatures.</p>
     </div>
     <div class="invariant-item branch">
-      <h3 style="color: var(--primary);">2. <code>git-ratchet verify</code> Enforces Git Ancestry</h3>
-      <p>Reads only the witnessed prefix <code>[0, size)</code>, then walks the logged states for the requested ref using Git's self-authenticating commit graph (<code>git merge-base --is-ancestor --no-replace-objects</code>).</p>
+      <h3 style="color: var(--primary);">2. <code>git-ratchet verify</code>: Git Fast-Forward &amp; Tag Rules</h3>
+      <p>Walks every entry for the ref in the witnessed log <code>[0, size)</code> and checks the local commit graph to verify that <strong>branches only fast-forward and tags never move</strong>.</p>
     </div>
   </div>
 
@@ -602,7 +602,7 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
 </div>
 
 <!-- Slide 4: C2SP Interoperability Matrix -->
-<div class="s" data-idx="4" data-notes="To answer the programme committee's question directly: which parts of git-ratchet are interoperable with C2SP.org specifications, and which parts are custom? || On the left, everything touching cryptography, checkpoints, policies, and witnessing is 100% standard C2SP. || - Checkpoints are standard c2sp.org/tlog-checkpoint. Because they carry no Git metadata, a private repository can also use public witnesses without leaking branch names or commit hashes. || - Witnessing uses transparency-dev's own tlog-witness client and is tested directly against their witness implementation. Any HTTP witness on the existing network can cosign a git-ratchet repository out of the box. || - Signatures follow signed-note and tlog-cosignature via transparency-dev/formats, supporting both Ed25519 and post-quantum ML-DSA-44. || - Policies use standard c2sp.org/tlog-policy. || - And log entries are packaged into standard c2sp.org/tlog-tiles entry bundles using tessera/api and hashed with transparency-dev/merkle. || On the right are the four places where git-ratchet adds a Git-specific layer or adaptation: || 1. Storage: the log lives in a Git tree at refs/ratchet/log rather than on an HTTP tile server, and omits hash tiles (tile/level/...) because every Git clone already has all entry bundles locally and recomputes the Merkle tree in memory. || 2. The leaf entry schema inside those bundles (ref-record/v1). || 3. The domain-specific ancestry walk in git-ratchet verify. || 4. An optional github-issue:// witness URI transport that tunnels standard message/http add-checkpoint requests and responses through a GitHub Issue and Actions comment for zero-server witnessing.">
+<div class="s" data-idx="4" data-notes="Finally, to answer the programme committee's question directly: which parts of git-ratchet are standard C2SP, and which parts are Git-specific adaptations? || On the left, everything touching cryptography, checkpoints, policies, entry bundles, and witnessing is 100% unmodified C2SP — meaning any existing HTTP witness on the network can cosign a git-ratchet repository out of the box, including private repos without leaking ref or commit names. || On the right are the only four Git-specific layers: storing entry bundles in a Git tree at refs/ratchet/log (without intermediate hash tiles since every clone has all entries locally), the two-line ref-record/v1 payload inside those bundles, the Git ancestry walk in git-ratchet verify, and an optional github-issue:// witness transport.">
   <div class="label">Specification Alignment</div>
   <h2>What Is (and Isn't) Interoperable with C2SP.org</h2>
 
@@ -610,11 +610,11 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
     <div class="card green">
       <span class="badge green" style="margin-bottom: 10px;">✓ 100% Standard C2SP Specs</span>
       <ul>
-        <li><strong><a href="https://c2sp.org/tlog-checkpoint" style="color: var(--primary); font-family: var(--mono);">c2sp.org/tlog-checkpoint</a></strong> — Standard 3-line body. Zero Git fields (private repos can use public witnesses with zero info leakage).</li>
-        <li><strong><a href="https://c2sp.org/tlog-witness" style="color: var(--primary); font-family: var(--mono);">c2sp.org/tlog-witness</a></strong> — Uses <code>transparency-dev/witness</code> client; <strong>any existing C2SP HTTP witness</strong> can cosign unmodified.</li>
-        <li><strong><a href="https://c2sp.org/signed-note" style="color: var(--primary); font-family: var(--mono);">signed-note</a> &amp; <a href="https://c2sp.org/tlog-cosignature" style="color: var(--primary); font-family: var(--mono);">tlog-cosignature</a></strong> — Ed25519 &amp; post-quantum <strong>ML-DSA-44</strong> (<code>0x06</code>) via <code>transparency-dev/formats</code>.</li>
-        <li><strong><a href="https://c2sp.org/tlog-policy" style="color: var(--primary); font-family: var(--mono);">c2sp.org/tlog-policy</a></strong> — Standard <code>log</code> / <code>witness</code> / <code>group</code> / <code>quorum</code> grammar evaluated by <code>transparency-dev/formats/policy</code>.</li>
-        <li><strong><a href="https://c2sp.org/tlog-tiles" style="color: var(--primary); font-family: var(--mono);">c2sp.org/tlog-tiles</a> (Entry Bundles)</strong> — <code>tile/entries/&lt;path&gt;</code> bundles via <code>tessera/api</code> + RFC 6962 hashing via <code>transparency-dev/merkle</code>.</li>
+        <li><strong><a href="https://c2sp.org/tlog-checkpoint" style="color: var(--primary); font-family: var(--mono);">tlog-checkpoint</a></strong> — Standard 3-line body with zero Git fields (safe for private repos on public witnesses).</li>
+        <li><strong><a href="https://c2sp.org/tlog-witness" style="color: var(--primary); font-family: var(--mono);">tlog-witness</a></strong> — Any existing C2SP HTTP witness can cosign unmodified.</li>
+        <li><strong><a href="https://c2sp.org/signed-note" style="color: var(--primary); font-family: var(--mono);">signed-note</a> &amp; <a href="https://c2sp.org/tlog-cosignature" style="color: var(--primary); font-family: var(--mono);">tlog-cosignature</a></strong> — Ed25519 &amp; post-quantum <strong>ML-DSA-44</strong> (timestamped).</li>
+        <li><strong><a href="https://c2sp.org/tlog-policy" style="color: var(--primary); font-family: var(--mono);">tlog-policy</a></strong> — Standard <code>log</code> / <code>witness</code> / <code>group</code> / <code>quorum</code> policy grammar.</li>
+        <li><strong><a href="https://c2sp.org/tlog-tiles" style="color: var(--primary); font-family: var(--mono);">tlog-tiles</a> (Entry Bundles)</strong> — Standard <code>tile/entries/&lt;path&gt;</code> bundles + RFC 6962 hashing.</li>
       </ul>
     </div>
 
