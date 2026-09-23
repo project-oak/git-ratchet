@@ -438,6 +438,20 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
 }
 
 /* ---- Phone layer ------------------------------------------------------- */
+.safe-box-with-graphic {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.safe-box-with-graphic .ratchet-emblem {
+  flex-shrink: 0;
+  background: rgba(15, 16, 25, 0.65);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  border-radius: 8px;
+  padding: 8px 6px;
+}
+
 @media (max-width: 820px) {
   body { height: 100vh; height: 100dvh; }
   .s { padding: 28px 20px 88px; }
@@ -454,6 +468,7 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
   .card-grid.cols-2,
   .card-grid.cols-3 { grid-template-columns: 1fr; gap: 14px; }
   .invariant { flex-direction: column; gap: 12px; }
+  .safe-box-with-graphic { flex-direction: column; }
   .flow { gap: 8px; }
   .flow-arrow { transform: rotate(90deg); }
 
@@ -508,14 +523,41 @@ nav button:hover { background: var(--surface-alt); color: var(--text); }
       </ul>
     </div>
 
-    <div class="safe-box" style="margin: 0;">
-      <span class="badge green" style="margin-bottom: 10px;">With git-ratchet</span>
-      <h3>What git-ratchet Guarantees</h3>
-      <ul>
-        <li><strong>Branches are a forward-only ratchet:</strong> Every logged commit must descend from the previous one. Rewriting history breaks verification permanently.</li>
-        <li><strong>Tags are immutable pins:</strong> Once logged, repointing a tag to a second object hash is rejected.</li>
-        <li><strong>Split-view resistance:</strong> Independent witnesses cosign checkpoints over the ref log, ensuring a single global history.</li>
-      </ul>
+    <div class="safe-box safe-box-with-graphic" style="margin: 0;">
+      <div>
+        <span class="badge green" style="margin-bottom: 10px;">With git-ratchet</span>
+        <h3>What git-ratchet Guarantees</h3>
+        <ul>
+          <li><strong>Branches are a forward-only ratchet:</strong> Every logged commit must descend from the previous one. Rewriting history breaks verification permanently.</li>
+          <li><strong>Tags are immutable pins:</strong> Once logged, repointing a tag to a second object hash is rejected.</li>
+          <li><strong>Split-view resistance:</strong> Independent witnesses cosign checkpoints over the ref log, ensuring a single global history.</li>
+        </ul>
+      </div>
+      <div class="ratchet-emblem" aria-label="Vertical ratchet diagram showing main @ c3 advancing up and locked against rollback down">
+        <svg width="186" height="196" viewBox="28 12 202 204" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Vertical sawtooth spine -->
+          <path d="M 55 210 L 55 20 L 82 20
+                   L 82 46  L 110 46  L 82 82
+                   L 110 82  L 82 118
+                   L 110 118 L 82 154
+                   L 110 154 L 82 190
+                   L 110 190 L 82 210 Z"
+                fill="#1a1b2e" stroke="#4ade80" stroke-width="2.2" stroke-linejoin="round"/>
+          <!-- Red locking shelf at y=118 -->
+          <line x1="82" y1="118" x2="110" y2="118" stroke="#f87171" stroke-width="4" stroke-linecap="round"/>
+          <!-- Pawl + Horizontal Bar -->
+          <polygon points="84,117 110,117 124,92 104,92" fill="#222336" stroke="#60a5fa" stroke-width="2" stroke-linejoin="round"/>
+          <rect x="122" y="88" width="96" height="26" rx="5" fill="rgba(96,165,250,0.2)" stroke="#60a5fa" stroke-width="2"/>
+          <text x="170" y="105" text-anchor="middle" fill="#e4e2ee" font-size="11" font-weight="700" font-family="JetBrains Mono, monospace">main @ c3</text>
+          <!-- Up arrow -->
+          <path d="M 170 76 L 170 44 M 170 44 L 163 51 M 170 44 L 177 51" stroke="#4ade80" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="170" y="36" text-anchor="middle" fill="#4ade80" font-size="10.5" font-weight="600" font-family="JetBrains Mono, monospace">↑ advance</text>
+          <!-- Down blocked arrow -->
+          <path d="M 170 124 L 170 152 M 170 152 L 163 145 M 170 152 L 177 145" stroke="#f87171" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <line x1="161" y1="157" x2="179" y2="157" stroke="#f87171" stroke-width="2.6" stroke-linecap="round"/>
+          <text x="170" y="172" text-anchor="middle" fill="#f87171" font-size="10.5" font-weight="600" font-family="JetBrains Mono, monospace">✗ rollback</text>
+        </svg>
+      </div>
     </div>
   </div>
 
