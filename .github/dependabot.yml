@@ -19,6 +19,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Here and below: wait a week before proposing a new release, so a
+    # compromised or broken one is likely to have been caught upstream first.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -33,6 +37,8 @@ updates:
       - "/actions/*"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -50,6 +56,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -64,6 +72,8 @@ updates:
     directory: "/deploy/origin"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
