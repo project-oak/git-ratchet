@@ -1,12 +1,12 @@
 module github.com/project-oak/git-ratchet
 
-go 1.26
+go 1.26.0
 
 require github.com/google/subcommands v1.2.0
 
 require (
 	filippo.io/mldsa v0.0.0-20260215214346-43d0283efc3e
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -16,7 +16,7 @@ require (
 
 require (
 	github.com/transparency-dev/tessera v1.0.4
-	golang.org/x/mod v0.40.0
+	golang.org/x/mod v0.42.0
 )
 
 require (
@@ -35,7 +35,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.11.0 // indirect
-	cloud.google.com/go/kms v1.31.0
+	cloud.google.com/go/kms v1.35.0
 	cloud.google.com/go/longrunning v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
