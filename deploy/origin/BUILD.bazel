@@ -22,11 +22,12 @@ tf_library(
         "main.tf",
         "variables.tf",
     ],
-    providers = ["@tf_providers_hashicorp_google//:provider"],
+    providers = ["@tf_providers//hashicorp/google"],
 )
 
 tf_deploy(
     name = "origin",
+    allow_ephemeral_state = True,
     vars = {
         "project": "PROJECT",
         "region": "us-central1",

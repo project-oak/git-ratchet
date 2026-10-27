@@ -37,4 +37,6 @@ jobs:
           go-version-file: go.mod
 
       - name: Validate license headers
-        run: go run github.com/google/addlicense@v1.2.0 -check -s=only .
+        # .terraform.lock.hcl is written by tofu (and Dependabot), which drop any
+        # header on every rewrite.
+        run: go run github.com/google/addlicense@v1.2.0 -check -s=only -ignore '**/.terraform.lock.hcl' .
