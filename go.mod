@@ -5,7 +5,7 @@ go 1.26
 require github.com/google/subcommands v1.2.0
 
 require (
-	filippo.io/mldsa v0.0.0-20260215214346-43d0283efc3e
+	filippo.io/mldsa v1.0.0
 	google.golang.org/protobuf v1.36.11
 )
 
