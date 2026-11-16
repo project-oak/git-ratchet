@@ -2,6 +2,8 @@ module github.com/project-oak/git-ratchet
 
 go 1.26
 
+toolchain go1.26.11
+
 require github.com/google/subcommands v1.2.0
 
 require (
