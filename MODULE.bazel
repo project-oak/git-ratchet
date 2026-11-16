@@ -24,6 +24,14 @@ bazel_dep(name = "rules_tofu", version = "0.4.0")
 # Build with the Go release that go.mod names, not rules_go's default SDK, so
 # that a dependency whose go.mod needs a newer Go than that default can still
 # be fetched.
+#
+# Dependabot's Bazel updater fetches only the files that MODULE.bazel names in
+# attributes it knows, such as lock_file and from_file, and go_mod is not one
+# of them. Without go.mod and go.sum it cannot regenerate MODULE.bazel.lock.
+# It matches those attributes in comments too, so the next two lines make it
+# fetch both files. Do not remove them.
+#   from_file = "//:go.mod"
+#   from_file = "//:go.sum"
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
 
